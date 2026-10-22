@@ -1,8 +1,8 @@
 --
 -- 10_meta.sql
--- Report header facts, containers, the global DBMS_STATS preferences of
--- the current container, the automatic statistics task's status per
--- container and the scheduler windows it runs in.
+-- Report header facts, containers, the Oracle-maintained schemas, the
+-- global DBMS_STATS preferences of the current container, the automatic
+-- statistics task's status per container and the scheduler windows it runs in.
 --
 
 -- D.meta: one object
@@ -34,6 +34,15 @@ SELECT '<script>D.cons = [' FROM dual;
 SELECT JSON_ARRAY(con_id, name NULL ON NULL) || ','
 FROM v$containers
 ORDER BY con_id;
+SELECT '];</script>' FROM dual;
+
+-- D.omu: Oracle-maintained schemas [con_id, username], so the page can
+-- separate application work from Oracle's own
+SELECT '<script>D.omu = [' FROM dual;
+SELECT JSON_ARRAY(u.con_id, u.username NULL ON NULL RETURNING VARCHAR2(4000)) || ','
+FROM cdb_users u
+WHERE u.oracle_maintained = 'Y'
+ORDER BY u.con_id, u.username;
 SELECT '];</script>' FROM dual;
 
 -- D.prefs: [name, value] global preferences of the current container.

@@ -14,7 +14,7 @@ PL/SQL; no DDL/DML, no flush of monitoring info. Keep it that way.
 gather_dashboard.sql    driver: settings, positional args, SPOOL, sections
 run_gather_dashboard.sh wrapper: args, NLS_LANG, reports/, error check
 sql/00_head.sql         <head>, @@_css.sql, `var D = {}`
-sql/10_meta.sql         D.meta, D.cons, D.prefs, D.atc, D.wcfg
+sql/10_meta.sql         D.meta, D.cons, D.omu, D.prefs, D.atc, D.wcfg
 sql/20_operations.sql   D.ops   (CDB_OPTSTAT_OPERATIONS)
 sql/30_tasks.sql        D.tagg (exact totals), D.tasks (capped per run)
 sql/40_jobs_windows.sql D.ajh, D.sjr, D.win
