@@ -1,0 +1,23 @@
+# Filebeat input for the statistics-gathering export (elastic/export.sh).
+# Drop into the inputs.d/ directory of the DB host's Filebeat (deployed per
+# elk_db_automation; inputs.d is hot-reloaded, no restart needed). Filebeat's
+# own output (Logstash over mTLS) and its host/labels processors apply as for
+# every other Oracle input.
+#
+# log_type routes the events to elastic/logstash/orastats_gather.conf; the
+# exporter's "id" becomes @metadata._id, the Elasticsearch document id.
+- type: filestream
+  id: orastats-gather
+  enabled: true
+  paths:
+    - /u01/app/oracle/filebeat/generated/orastats-gather-*.ndjson
+  fields_under_root: true
+  fields:
+    log_type: orastats_gather
+  parsers:
+    - ndjson:
+        target: ""
+        add_error_key: true
+        expand_keys: true
+        overwrite_keys: true
+        document_id: id

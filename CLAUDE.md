@@ -26,6 +26,9 @@ web/dev.html            dev harness: loads dev-data.js + source files
 tools/build_assets.sh   web/* -> sql/_*.sql  (--check for staleness)
 tools/extract_data.sh   report -> web/dev-data.js
 tools/run_on_dbmint.sh  sync to the dbmint lab VM, run, copy report back
+elastic/                Elastic Stack export: export.sh + export_gather.sql (NDJSON),
+                        Filebeat input, Logstash conf, index template, Kibana builder;
+                        see elastic/README.md
 ```
 
 ## Rules that break a run if ignored

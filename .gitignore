@@ -1,3 +1,4 @@
 reports/*
 !reports/.gitkeep
 web/dev-data.js
+__pycache__/

@@ -1,0 +1,333 @@
+{
+  "_meta": {
+    "description": "orastats-gather-<record>: plain indices (not data streams) holding what elastic/export_gather.sql exports about DBMS_STATS statistics gathering on Oracle 19c. Plain so that the exporter's deterministic _ids overwrite on re-runs. host.name and labels.* are stamped by Filebeat on the DB host; everything else comes from the exporter. Every timestamp is UTC.",
+    "records": {
+      "operation": "orastats-gather-operation: one per DBMS_STATS operation (CDB_OPTSTAT_OPERATIONS) with per-object totals, outcome, job, window and CPU. @timestamp = operation start.",
+      "task": "orastats-gather-task: one per object a gather operation touched (CDB_OPTSTAT_OPERATION_TASKS). @timestamp = object start.",
+      "stale": "orastats-gather-stale: one per table/partition/subpartition stale or without statistics, per export day (daily snapshot). @timestamp = export time.",
+      "window": "orastats-gather-window: one per scheduler window opened (CDB_SCHEDULER_WINDOW_DETAILS), with the automatic runs inside it. @timestamp = window start.",
+      "status": "orastats-gather-status: one per container per export hour: automatic task status, last automatic run, stale counts. @timestamp = export time."
+    },
+    "managed_by": "orastats_gather_dashboard/elastic"
+  },
+  "index_patterns": [
+    "orastats-gather-*"
+  ],
+  "priority": 210,
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "refresh_interval": "5s"
+    },
+    "mappings": {
+      "dynamic": "strict",
+      "date_detection": false,
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "host": {
+          "properties": {
+            "name": {
+              "type": "keyword"
+            }
+          }
+        },
+        "labels": {
+          "properties": {
+            "environment": {
+              "type": "keyword"
+            },
+            "criticality": {
+              "type": "keyword"
+            }
+          }
+        },
+        "gs": {
+          "properties": {
+            "record": {
+              "type": "keyword"
+            },
+            "source": {
+              "type": "keyword"
+            },
+            "db": {
+              "type": "keyword"
+            },
+            "con": {
+              "type": "keyword"
+            },
+            "con_id": {
+              "type": "long"
+            },
+            "owner": {
+              "type": "keyword"
+            },
+            "oracle_maintained": {
+              "type": "boolean"
+            },
+            "exported_at": {
+              "type": "date"
+            },
+            "op": {
+              "properties": {
+                "id": {
+                  "type": "long"
+                },
+                "key": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword"
+                },
+                "kind": {
+                  "type": "keyword"
+                },
+                "target": {
+                  "type": "keyword"
+                },
+                "status": {
+                  "type": "keyword"
+                },
+                "outcome": {
+                  "type": "keyword"
+                },
+                "start": {
+                  "type": "date"
+                },
+                "end": {
+                  "type": "date"
+                },
+                "secs": {
+                  "type": "double"
+                },
+                "hour": {
+                  "type": "keyword"
+                },
+                "job": {
+                  "type": "keyword"
+                },
+                "session_id": {
+                  "type": "long"
+                },
+                "window": {
+                  "type": "keyword"
+                },
+                "job_status": {
+                  "type": "keyword"
+                },
+                "cpu_secs": {
+                  "type": "double"
+                },
+                "error": {
+                  "type": "text",
+                  "fields": {
+                    "keyword": {
+                      "type": "keyword",
+                      "ignore_above": 1024
+                    }
+                  }
+                }
+              }
+            },
+            "objects": {
+              "properties": {
+                "total": {
+                  "type": "long"
+                },
+                "gathered": {
+                  "type": "long"
+                },
+                "failed": {
+                  "type": "long"
+                },
+                "failed_expected": {
+                  "type": "long"
+                },
+                "not_processed": {
+                  "type": "long"
+                },
+                "histograms": {
+                  "type": "long"
+                },
+                "secs": {
+                  "type": "double"
+                }
+              }
+            },
+            "task": {
+              "properties": {
+                "target": {
+                  "type": "keyword"
+                },
+                "object": {
+                  "type": "keyword"
+                },
+                "partition": {
+                  "type": "keyword"
+                },
+                "subpartition": {
+                  "type": "keyword"
+                },
+                "type": {
+                  "type": "keyword"
+                },
+                "status": {
+                  "type": "keyword"
+                },
+                "start": {
+                  "type": "date"
+                },
+                "end": {
+                  "type": "date"
+                },
+                "secs": {
+                  "type": "double"
+                },
+                "size": {
+                  "type": "long"
+                },
+                "histograms": {
+                  "type": "long"
+                },
+                "expected": {
+                  "type": "boolean"
+                },
+                "error": {
+                  "type": "text",
+                  "fields": {
+                    "keyword": {
+                      "type": "keyword",
+                      "ignore_above": 1024
+                    }
+                  }
+                }
+              }
+            },
+            "obj": {
+              "properties": {
+                "name": {
+                  "type": "keyword"
+                },
+                "key": {
+                  "type": "keyword"
+                },
+                "table": {
+                  "type": "keyword"
+                },
+                "partition": {
+                  "type": "keyword"
+                },
+                "subpartition": {
+                  "type": "keyword"
+                },
+                "type": {
+                  "type": "keyword"
+                },
+                "category": {
+                  "type": "keyword"
+                },
+                "rows": {
+                  "type": "long"
+                },
+                "blocks": {
+                  "type": "long"
+                },
+                "last_analyzed": {
+                  "type": "date"
+                },
+                "stale": {
+                  "type": "boolean"
+                },
+                "missing": {
+                  "type": "boolean"
+                },
+                "locked": {
+                  "type": "keyword"
+                },
+                "inserts": {
+                  "type": "long"
+                },
+                "updates": {
+                  "type": "long"
+                },
+                "deletes": {
+                  "type": "long"
+                },
+                "dml": {
+                  "type": "long"
+                },
+                "truncated": {
+                  "type": "boolean"
+                },
+                "dml_ts": {
+                  "type": "date"
+                },
+                "pct_changed": {
+                  "type": "double"
+                }
+              }
+            },
+            "win": {
+              "properties": {
+                "name": {
+                  "type": "keyword"
+                },
+                "start": {
+                  "type": "date"
+                },
+                "end": {
+                  "type": "date"
+                },
+                "planned_secs": {
+                  "type": "long"
+                },
+                "secs": {
+                  "type": "long"
+                },
+                "maintenance": {
+                  "type": "boolean"
+                },
+                "auto_runs": {
+                  "type": "long"
+                },
+                "has_auto_run": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "status": {
+              "properties": {
+                "task_status": {
+                  "type": "keyword"
+                },
+                "last_auto_start": {
+                  "type": "date"
+                },
+                "last_auto_status": {
+                  "type": "keyword"
+                },
+                "hours_since_last_auto": {
+                  "type": "double"
+                },
+                "app_stale": {
+                  "type": "long"
+                },
+                "app_missing": {
+                  "type": "long"
+                },
+                "app_locked": {
+                  "type": "long"
+                },
+                "oracle_needing": {
+                  "type": "long"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

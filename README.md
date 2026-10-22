@@ -71,3 +71,17 @@ read-only).
 ## Development
 
 See [CLAUDE.md](CLAUDE.md).
+
+## Oracle APEX application
+
+[Statistics Observatory](apex/README.md) presents a published dashboard snapshot
+inside Oracle APEX 26.2, with sign-in, interactive charts, and run drilldowns.
+Its installer and snapshot publisher are separate from the read-only collector.
+
+## Elastic Stack integration
+
+[`elastic/`](elastic/README.md) ships the same history to Elasticsearch: a
+read-only exporter writes NDJSON on the DB host, Filebeat and Logstash carry it
+into the `orastats-gather-*` indices, and three Kibana dashboards (overview,
+run detail, needs statistics) sit on top. The step-by-step deployment is in
+[elastic/README.md](elastic/README.md#deploy).

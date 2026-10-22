@@ -1,0 +1,91 @@
+/* APEX-only presentation. Loaded after the shared report stylesheet. */
+:root {
+  --observatory-space: clamp(1rem, 0.45rem + 2vw, 2.5rem);
+  --observatory-title: clamp(1.6rem, 1.2rem + 1.4vw, 2.65rem);
+  --display: "Aptos Display", "Segoe UI", system-ui, sans-serif;
+  --paper: light-dark(oklch(97.2% 0.009 275), oklch(17% 0.024 275));
+}
+body, #app { background: var(--paper); }
+.t-Body-content, .t-Body-mainContent, .t-Body-contentInner { padding: 0; margin: 0; }
+.t-Header, .t-Footer, .t-Body-title { display: none; }
+.t-Body { margin: 0; }
+.t-Body-main { margin: 0; }
+.t-Body-contentInner > .container, .t-Body-contentInner > .container > .row > .col {
+  padding: 0; max-inline-size: none;
+}
+.obs-masthead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem 2rem;
+  align-items: center;
+  padding-block: 1.3rem;
+  padding-inline: var(--observatory-space);
+  background: oklch(22% 0.045 275);
+  color: oklch(98% 0.005 275);
+  border-block-end: 1px solid oklch(35% 0.055 275);
+}
+.obs-brand { display: flex; align-items: center; gap: 0.85rem; }
+.obs-brand img { inline-size: 44px; block-size: 44px; flex: none; }
+.obs-brand strong { display: block; font-size: 1.1rem; letter-spacing: -0.025em; }
+.obs-eyebrow { font-size: 0.66rem; letter-spacing: 0.14em; text-transform: uppercase; color: oklch(77% 0.05 275); }
+.obs-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; margin-inline-start: auto; }
+.obs-actions a, .obs-actions button {
+  color: oklch(94% 0.025 275);
+  background: oklch(29% 0.045 275);
+  border: 1px solid oklch(43% 0.05 275);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  padding-block: 0.55rem;
+  padding-inline: 0.85rem;
+}
+.obs-actions :is(a, button):active { background: oklch(40% 0.07 275); }
+@media (hover: hover) and (pointer: fine) {
+  .obs-actions :is(a, button):hover { background: oklch(37% 0.055 275); text-decoration: none; }
+}
+.obs-context {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.5rem;
+  padding-block: 0.65rem;
+  padding-inline: var(--observatory-space);
+  color: var(--ink-2);
+  background: var(--surface);
+  border-block-end: 1px solid var(--line);
+  font-size: 0.75rem;
+}
+#snapshot-source { font-weight: 600; }
+#snapshot-time { margin-inline-start: auto; }
+.top { background: var(--surface); padding-block: 0.8rem; }
+.tabs a { padding-block: 0.65rem; }
+.tabs a[aria-current="page"] { background: var(--accent-wash); color: var(--accent); }
+.tabs a[aria-current="page"]::after { display: none; }
+#view { max-inline-size: 1600px; padding-block-start: 1.6rem; }
+.hero {
+  padding: var(--observatory-space);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: linear-gradient(115deg, var(--surface), color-mix(in oklch, var(--accent) 7%, var(--surface)));
+  box-shadow: 0 8px 30px color-mix(in oklch, var(--shadow) 20%, transparent);
+}
+.hero::before {
+  content: "STATISTICS HEALTH / OVERVIEW";
+  display: block;
+  margin-block-end: 1rem;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 650;
+  letter-spacing: 0.13em;
+}
+.hero .verdict { font-size: var(--observatory-title); letter-spacing: -0.035em; margin-block: 0; }
+.hero .verdict-sub { margin-block: 0.75rem 0; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr)); gap: 0.85rem; border: 0; padding: 0; }
+.stats > div { padding: 1.1rem; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.stats dd { font-family: var(--display); font-weight: 650; font-size: 1.85rem; letter-spacing: -0.045em; }
+.stats dd small { display: block; font-size: 0.7rem; letter-spacing: 0; margin-inline: 0; margin-block-start: 0.25rem; }
+.stats dt { font-size: 0.73rem; }
+.sec > header h2 { font-size: 1.2rem; letter-spacing: -0.025em; }
+.surface { border-radius: 14px; box-shadow: 0 4px 20px color-mix(in oklch, var(--shadow) 12%, transparent); }
+.chart-head { padding-block-start: 1rem; }
+.findings, .needs { padding: 1.2rem; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; }
+.drawer { border-radius: 18px; }
+.foot { max-inline-size: 1600px; margin-inline: auto; }
