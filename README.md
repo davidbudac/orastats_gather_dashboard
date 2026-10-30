@@ -14,7 +14,13 @@ from `file://` offline.
 ./run_gather_dashboard.sh user/pw@svc                # last 31 days -> reports/
 ./run_gather_dashboard.sh '/ as sysdba' 7            # OS auth, last 7 days (quote it)
 PDB=PDB1 ./run_gather_dashboard.sh '/ as sysdba'     # one PDB from a root connection
+QUIET=1 ./run_gather_dashboard.sh '/ as sysdba'      # cron: only warnings and the report path
 ```
+
+The wrapper says when it has connected (database, user, container), when the SQL
+script is running, and when it is done (time, report path and size). A failed login
+or a section that failed shows with its ORA- error. The password in a connect string
+is masked.
 
 Or from SQL*Plus / SQLcl directly (all arguments optional):
 
