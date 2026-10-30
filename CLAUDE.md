@@ -20,6 +20,7 @@ sql/30_tasks.sql        D.tagg (exact totals), D.tasks (capped per run)
 sql/40_jobs_windows.sql D.ajh, D.sjr, D.win
 sql/50_backlog.sql      D.blagg (exact counts), D.bl (capped), D.tprefs
 sql/60_columns.sql      D.colagg (exact), D.cols (capped), D.mon, D.near (capped)
+sql/70_tables.sql       D.tabs (capped), D.idx (index -> table), D.syn (synopses)
 sql/90_app.sql          @@_app.sql, </body>
 sql/_css.sql, _app.sql  GENERATED from web/style.css, web/app.js
 web/app.js, style.css   page source (no libraries)

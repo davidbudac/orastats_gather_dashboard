@@ -426,6 +426,24 @@ DBMS_OUTPUT.PUT_LINE(q'~  flex: none;~');
 DBMS_OUTPUT.PUT_LINE(q'~}~');
 DBMS_OUTPUT.PUT_LINE(q'~.pctbar b { display: block; block-size: 100%; border-radius: 3px; background: var(--warn); }~');
 DBMS_OUTPUT.PUT_LINE(q'~.pctbar i { position: absolute; inset-block: -3px; inline-size: 1.5px; background: var(--ink-2); }~');
+DBMS_OUTPUT.PUT_LINE(q'~/* object names that open the Table view */~');
+DBMS_OUTPUT.PUT_LINE(q'~code a.tl { color: inherit; text-decoration: underline; text-decoration-color: var(--line-strong); text-decoration-thickness: 1px; }~');
+DBMS_OUTPUT.PUT_LINE(q'~@media (hover: hover) and (pointer: fine) {~');
+DBMS_OUTPUT.PUT_LINE(q'~  code a.tl:hover { color: var(--accent); text-decoration-color: var(--accent); }~');
+DBMS_OUTPUT.PUT_LINE(q'~}~');
+DBMS_OUTPUT.PUT_LINE(q'~/* objects that matched the text filter, under a run's target */~');
+DBMS_OUTPUT.PUT_LINE(q'~.hits { font-size: 0.75rem; color: var(--muted); margin-block-start: 0.15rem; }~');
+DBMS_OUTPUT.PUT_LINE(q'~/* ---- one table --------------------------------------------------------- */~');
+DBMS_OUTPUT.PUT_LINE(q'~.tb-find { margin-block-end: 1.5rem; }~');
+DBMS_OUTPUT.PUT_LINE(q'~.tb-head header h2 code { font-size: 0.9em; font-weight: 600; }~');
+DBMS_OUTPUT.PUT_LINE(q'~.tb-head header .pill { align-self: center; }~');
+DBMS_OUTPUT.PUT_LINE(q'~table.checks td:first-child { white-space: nowrap; }~');
+DBMS_OUTPUT.PUT_LINE(q'~table.checks td:nth-child(2) { font-variant-numeric: tabular-nums; }~');
+DBMS_OUTPUT.PUT_LINE(q'~table.prefs-t td:last-child { white-space: nowrap; }~');
+DBMS_OUTPUT.PUT_LINE(q'~table.prefs-t tr.own td { color: var(--ink); }~');
+DBMS_OUTPUT.PUT_LINE(q'~table.prefs-t tr:not(.own) td { color: var(--muted); }~');
+DBMS_OUTPUT.PUT_LINE(q'~table.prefs-t tr:not(.own) td code { color: var(--ink-2); }~');
+DBMS_OUTPUT.PUT_LINE(q'~svg .cell-empty { fill: var(--raised); }~');
 DBMS_OUTPUT.PUT_LINE(q'~/* where a run's time went */~');
 DBMS_OUTPUT.PUT_LINE(q'~.strip { display: flex; gap: 2px; block-size: 2rem; border-radius: 6px; overflow: clip; }~');
 DBMS_OUTPUT.PUT_LINE(q'~.strip span {~');
@@ -489,6 +507,9 @@ DBMS_OUTPUT.PUT_LINE(q'~svg .t-s1 { stroke: color-mix(in oklch, var(--s1) 70%, v
 DBMS_OUTPUT.PUT_LINE(q'~svg .t-s2 { stroke: color-mix(in oklch, var(--s2) 70%, var(--ink)); }~');
 DBMS_OUTPUT.PUT_LINE(q'~svg .t-s3 { stroke: color-mix(in oklch, var(--s3) 70%, var(--ink)); }~');
 DBMS_OUTPUT.PUT_LINE(q'~svg .now { stroke: var(--accent); stroke-width: 2; }~');
+END;
+/
+BEGIN
 DBMS_OUTPUT.PUT_LINE(q'~svg .day { fill: transparent; cursor: pointer; }~');
 DBMS_OUTPUT.PUT_LINE(q'~svg .mark { cursor: pointer; stroke: var(--surface); stroke-width: 0.75; }~');
 DBMS_OUTPUT.PUT_LINE(q'~svg .dot { stroke: var(--surface); stroke-width: 1; cursor: pointer; }~');
@@ -507,9 +528,6 @@ DBMS_OUTPUT.PUT_LINE(q'~.f-info { fill: var(--muted); }~');
 DBMS_OUTPUT.PUT_LINE(q'~.f-man { fill: var(--manual); }~');
 DBMS_OUTPUT.PUT_LINE(q'~.f-s1 { fill: var(--s1); }~');
 DBMS_OUTPUT.PUT_LINE(q'~.f-s2 { fill: var(--s2); }~');
-END;
-/
-BEGIN
 DBMS_OUTPUT.PUT_LINE(q'~.f-s3 { fill: var(--s3); }~');
 DBMS_OUTPUT.PUT_LINE(q'~.f-acc { fill: var(--night-edge); }~');
 DBMS_OUTPUT.PUT_LINE(q'~.chart + .chart { margin-block-start: 1.5rem; }~');
@@ -539,6 +557,10 @@ DBMS_OUTPUT.PUT_LINE(q'~.legend b.win-empty { background: color-mix(in oklch, va
 DBMS_OUTPUT.PUT_LINE(q'~.legend b.nowin { background: repeating-linear-gradient(45deg, var(--line-strong) 0 1.5px, transparent 1.5px 4px); outline: 1px solid var(--line-strong); outline-offset: -1px; }~');
 DBMS_OUTPUT.PUT_LINE(q'~#tip {~');
 DBMS_OUTPUT.PUT_LINE(q'~  position: fixed;~');
+DBMS_OUTPUT.PUT_LINE(q'~  inset: auto;~');
+DBMS_OUTPUT.PUT_LINE(q'~  margin: 0;~');
+DBMS_OUTPUT.PUT_LINE(q'~  border: 0;~');
+DBMS_OUTPUT.PUT_LINE(q'~  overflow: visible;~');
 DBMS_OUTPUT.PUT_LINE(q'~  z-index: 100;~');
 DBMS_OUTPUT.PUT_LINE(q'~  pointer-events: none;~');
 DBMS_OUTPUT.PUT_LINE(q'~  display: none;~');
@@ -552,6 +574,7 @@ DBMS_OUTPUT.PUT_LINE(q'~  background: var(--ink);~');
 DBMS_OUTPUT.PUT_LINE(q'~  color: var(--paper);~');
 DBMS_OUTPUT.PUT_LINE(q'~  box-shadow: 0 8px 24px var(--shadow);~');
 DBMS_OUTPUT.PUT_LINE(q'~}~');
+DBMS_OUTPUT.PUT_LINE(q'~#tip:popover-open { display: block; }~');
 DBMS_OUTPUT.PUT_LINE(q'~#tip b { font-weight: 600; }~');
 DBMS_OUTPUT.PUT_LINE(q'~#tip code { font-size: 0.75rem; overflow-wrap: anywhere; }~');
 DBMS_OUTPUT.PUT_LINE(q'~#tip .muted { color: color-mix(in oklch, var(--paper) 72%, transparent); }~');

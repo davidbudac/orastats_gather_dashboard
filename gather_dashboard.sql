@@ -80,6 +80,7 @@ SPOOL &out_file
 @@sql/40_jobs_windows.sql
 @@sql/50_backlog.sql
 @@sql/60_columns.sql
+@@sql/70_tables.sql
 @@sql/90_app.sql
 
 SPOOL OFF

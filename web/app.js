@@ -169,6 +169,7 @@
     };
     t.parts = splitTarget(t.target);
     t.name = t.parts.join('.');
+    t.nameL = t.name.toLowerCase();
     t.secs = t.start && t.end ? (t.end - t.start) / 1000 : null;
     if (o) o.tasks.push(t);
     TASKS.push(t);
@@ -208,6 +209,17 @@
     }
   });
   WINS.forEach((w) => { w.maint = MAINT.has(conKey(w.con, w.name)) || /_WINDOW$/.test(w.name); });
+
+  // D.idx: index -> its table, so index gathers show under the table
+  const IDX = new Map(rows('idx').map((r) => [conKey(r[0], r[1] + '.' + r[2]), r[3] + '.' + r[4]]));
+  // The table an object row belongs to: "OWNER.TABLE" (null when unknown)
+  TASKS.forEach((t) => {
+    if (/^TABLE/.test(t.type)) t.tab = t.parts.length >= 2 ? t.parts[0] + '.' + t.parts[1] : null;
+    else if (/^INDEX/.test(t.type)) t.tab = IDX.get(conKey(t.con, t.parts.slice(0, 2).join('.'))) || null;
+    else t.tab = null;
+    // the partition or subpartition name, when the row is one
+    t.piece = !/PARTITION/.test(t.type) ? null : t.parts.length >= 3 ? t.parts[t.parts.length - 1] : (t.op && t.op.params.partname) || null;
+  });
 
   const ATC = rows('atc').map((r) => ({ con: r[0], status: r[1], group: r[2], mean: r[3], max7: r[4], attrs: r[5] }));
   const PREFS = new Map(rows('prefs').map((r) => [r[0], r[1]]));
@@ -337,11 +349,11 @@
   });
 
   const CATS = {
-    failed: { sev: 'crit', title: 'Last gather failed', text: 'The most recent attempt to gather this object in the period failed. It stays stale until the error is fixed.' },
+    failed: { sev: 'crit', title: 'Last gather failed', text: 'The last gather of it in the period failed. Stale until the error is fixed.' },
     missed: { sev: 'crit', title: 'Missed by the last automatic run', text: 'Its changes were recorded before the last automatic run started, yet that run did not gather it (run stopped early, object outside AUTOSTATS_TARGET, or a table preference).' },
-    locked: { sev: 'warn', title: 'Stale or missing, but locked', text: 'Statistics are locked: the automatic job and every gather without FORCE skip it. Intentional for some tables; check it is.' },
-    missing: { sev: 'warn', title: 'No statistics at all', text: 'Never gathered. The optimizer falls back to dynamic sampling. The automatic job gathers these first, so check why it has not.' },
-    fresh: { sev: 'info', title: 'Stale since the last automatic run', text: 'Changed after the last automatic run started. The next run is expected to pick it up; nothing missed yet.' },
+    locked: { sev: 'warn', title: 'Stale or missing, but locked', text: 'Locked: the automatic job and every gather without FORCE skip it. Check the lock is intentional.' },
+    missing: { sev: 'warn', title: 'No statistics at all', text: 'Never gathered: the optimizer uses dynamic sampling. The automatic job takes these first; check why it has not.' },
+    fresh: { sev: 'info', title: 'Stale since the last automatic run', text: 'Changed after the last automatic run started. The next run should take it.' },
     stale: { sev: 'info', title: 'Stale, time of change unknown', text: 'Marked stale but no DML monitoring row tells when it changed (e.g. no automatic run in the period to compare with).' },
     missingSub: { sev: 'info', title: 'Subpartitions without statistics', text: 'Usually by design: GRANULARITY AUTO does not gather subpartition statistics for every subpartitioning type.' },
     fixed: { sev: 'info', title: 'Fixed objects (X$) without statistics', text: 'Gathered only by GATHER_FIXED_OBJECTS_STATS or GATHER_DICTIONARY_STATS; some X$ tables can never be analyzed.' }
@@ -411,6 +423,48 @@
     b.share = b.pct != null && b.th ? b.pct / b.th : null;
     return b;
   });
+
+  // D.tabs: the tables the Table view knows about (sql/70_tables.sql)
+  const TABS = rows('tabs').map((r) => ({
+    con: r[0], owner: r[1], table: r[2], ptype: r[3], subptype: r[4], nparts: r[5], interval: r[6] === 'Y',
+    rows: r[7], blocks: r[8], analyzed: ts(r[9]), stale: r[10] === 'YES', locked: r[11], om: r[12] === 'Y',
+    pStale: r[13] || 0, pMissing: r[14] || 0, pNewest: ts(r[15]), pOldest: ts(r[16]), name: r[1] + '.' + r[2]
+  }));
+  const TABMAP = new Map(TABS.map((t) => [conKey(t.con, t.name), t]));
+  // D.syn: partitions with an incremental-statistics synopsis, per table
+  const SYN = new Map(rows('syn').map((r) => [conKey(r[0], r[1] + '.' + r[2]), { parts: r[3], newest: ts(r[4]), oldest: ts(r[5]) }]));
+  const tabHref = (con, name) => '#table/' + con + '/' + encodeURIComponent(name);
+  // "OWNER.TABLE" as a link into the Table view (the name as is when unknown)
+  function tabLink(con, name, label) {
+    return name ? '<a class="tl" href="' + tabHref(con, name) + '">' + esc(label || name) + '</a>' : esc(label || '');
+  }
+  // An object's name with its partition set apart: OWNER.TABLE <pill>partition P1</pill>.
+  // With link, the name opens the Table view when the table is known.
+  function pieceName(t, link) {
+    const base = t.piece ? t.parts.slice(0, -1).join('.') : t.name;
+    const name = '<code>' + (link && t.tab ? tabLink(t.con, t.tab, base) : esc(base)) + '</code>';
+    return !t.piece ? name : name + ' <span class="pill">' + (/SUB/.test(t.type) ? 'subpartition ' : 'partition ') + esc(t.piece) + '</span>';
+  }
+  // Backlog and near-stale rows: the table as a link, the partition as a pill;
+  // a group's pill lists its partitions on hover
+  function objCell(b, withCon) {
+    let h = '<code>' + tabLink(b.con, b.owner + '.' + b.table) + '</code>';
+    if (b.group) {
+      const names = b.members.map((x) => [x.part, x.sub].filter(Boolean).join('.'));
+      h += ' <span class="pill" data-tip="' + esc(names.slice(0, 15).map(esc).join('<br>') + (names.length > 15 ? '<br>+' + fmtN(names.length - 15) + ' more' : '')) + '">' + esc(plural(b.members.length, b.type.toLowerCase())) + '</span>';
+    } else if (b.part || b.sub) {
+      h += ' <span class="pill">' + (b.sub ? 'subpartition ' : 'partition ') + esc([b.part, b.sub].filter(Boolean).join('.')) + '</span>';
+    } else if (b.type && b.type !== 'TABLE') {
+      h += ' <span class="pill">' + esc(b.type.toLowerCase()) + '</span>';
+    }
+    return h + (withCon ? ' <span class="pill">' + esc(conName(b.con)) + '</span>' : '');
+  }
+  // Keep the tail (the partition) when a long name must be cut
+  function shortName(name, max) {
+    if (name.length <= max) return name;
+    const tail = name.slice(-Math.min(18, Math.floor(max / 2)));
+    return name.slice(0, max - tail.length - 1) + '\u2026' + tail;
+  }
 
   function sevBadge(sev, label, tip) {
     return '<span class="sev ' + sev + '"' + (tip ? ' data-tip="' + esc(tip) + '"' : '') + '><i>' + SEV_ICON[sev] + '</i>' + esc(label) + '</span>';
@@ -715,6 +769,14 @@
   // serial work shares a lane and concurrent work stacks.
   const typeClass = (t) => (t.status === 'FAILED' ? 'f-crit' : t.status !== 'COMPLETED' ? 'f-warn'
     : /INDEX/.test(t.type) ? 'f-s3' : /PARTITION/.test(t.type) ? 'f-s2' : 'f-s1');
+  // Tooltip of one object row: the partition named apart from its table
+  function objTip(t) {
+    const head = t.piece ? '<b>' + esc(t.parts.slice(0, -1).join('.')) + '</b><br>' + esc(t.type.toLowerCase()) + ' <b>' + esc(t.piece) + '</b>'
+      : '<b>' + esc(t.name) + '</b><br>' + esc(t.type.toLowerCase());
+    return head + ', ' + esc(t.status.toLowerCase()) +
+      '<br>' + esc(fmtClock(t.start, true)) + ', ' + esc(fmtDur(t.secs)) + (t.size != null ? ', size ' + fmtN(t.size) : '') +
+      (t.hist.length ? '<br>Histograms: ' + esc(t.hist.join(', ')) : '') + (t.error ? '<br><span class="muted">' + esc(t.error) + '</span>' : '');
+  }
   function ganttSVG(width, o, tasks) {
     const timed = tasks.filter((t) => t.start).sort((a, b) => a.start - b.start || (b.secs || 0) - (a.secs || 0));
     const rowsMode = timed.length <= 40;
@@ -747,11 +809,9 @@
       const y = top + (rowsMode ? i : lane.get(t)) * rowH;
       const a = x(t.start);
       const w = Math.max(1, x(t.end || t.start) - a - (rowsMode ? 0 : 1));
-      const tip = '<b>' + esc(t.name) + '</b><br>' + esc(t.type.toLowerCase()) + ', ' + esc(t.status.toLowerCase()) +
-        '<br>' + esc(fmtClock(t.start, true)) + ', ' + esc(fmtDur(t.secs)) + (t.size != null ? ', size ' + fmtN(t.size) : '') +
-        (t.hist.length ? '<br>Histograms: ' + esc(t.hist.join(', ')) : '') + (t.error ? '<br><span class="muted">' + esc(t.error) + '</span>' : '');
+      const tip = objTip(t);
       if (rowsMode) {
-        s += '<text x="0" y="' + (y + 14) + '" style="fill:var(--ink-2)">' + esc(t.name.length > 42 ? t.name.slice(0, 41) + '\u2026' : t.name) + '</text>';
+        s += '<text x="0" y="' + (y + 14) + '" style="fill:var(--ink-2)">' + esc(shortName(t.name, 42)) + '</text>';
         s += '<rect class="hit" x="0" y="' + y + '" width="' + (L + W) + '" height="' + rowH + '" data-tip="' + esc(tip) + '"/>';
         s += '<rect class="mark ' + typeClass(t) + '" pointer-events="none" x="' + a + '" y="' + (y + 4) + '" width="' + Math.max(2, w) + '" height="' + (rowH - 8) + '" rx="2"/>';
       } else {
@@ -775,7 +835,7 @@
       '<header class="top"><div class="ident"><span class="db">' + esc(META.db || '?') + '</span>' +
       '<span class="scope">' + esc(scopeText()) + ', last ' + DAYS + ' days</span></div>' +
       '<nav class="tabs" aria-label="Views"><a href="#overview" data-v="overview">Overview</a><a href="#runs" data-v="runs">Runs</a>' +
-      '<a href="#backlog" data-v="backlog">Needs statistics</a><a href="#columns" data-v="columns">Columns</a><a href="#config" data-v="config">Setup</a></nav>' +
+      '<a href="#backlog" data-v="backlog">Needs statistics</a><a href="#columns" data-v="columns">Columns</a><a href="#table" data-v="table">Table</a><a href="#config" data-v="config">Setup</a></nav>' +
       '<div class="prefs"><label data-tip="Include gathers, failures and stale objects in Oracle-maintained schemas (SYS, SYSTEM, AUDSYS, ...). Automatic runs always show."><input type="checkbox" id="om"> Oracle schemas</label>' +
       '<label>Times <select id="tz">' +
       '<option value="db">DB host (' + offLabel(dbo) + ')</option><option value="utc">UTC</option><option value="local">This browser (' + offLabel(-new Date().getTimezoneOffset()) + ')</option>' +
@@ -783,7 +843,7 @@
       '<main id="view"></main>' +
       '<footer class="foot"><span>Generated ' + esc(fmtT(GEN)) + ' (' + esc(tzMode === 'utc' ? 'UTC' : offLabel(tzOff(GEN))) + ')</span><span>' + esc(META.db || '') + ' ' + esc(META.version || '') + ' on ' + esc(META.host || '') +
       '</span><span>Collected as ' + esc(META.user || '') + ' in ' + esc(META.con || '') + '</span><span>Read-only; nothing was changed in the database</span></footer>' +
-      '<dialog class="drawer" id="drawer" aria-labelledby="drawer-title"></dialog><div id="tip" role="tooltip"></div>';
+      '<dialog class="drawer" id="drawer" aria-labelledby="drawer-title"></dialog><div id="tip" role="tooltip" popover="manual"></div>';
     const tz = document.getElementById('tz');
     tz.value = tzMode;
     tz.onchange = () => { tzMode = tz.value; if (store) store.setItem('gd.tz', tzMode); chrome(); wireDrawer(); renderedBase = null; keepScroll = true; route(); };
@@ -815,13 +875,21 @@
     return !showOM && n ? ' <button type="button" class="linkish" data-om-on>+' + fmtN(n) + ' in Oracle schemas</button>' : '';
   }
 
+  // The tooltip lives in the top layer (popover) so it shows over the run
+  // drawer, which is a modal dialog.  Older browsers: display toggling.
+  const POP = 'showPopover' in HTMLElement.prototype;
+  function hideTip() {
+    const tip = document.getElementById('tip');
+    if (!tip) return;
+    if (POP) { if (tip.matches(':popover-open')) tip.hidePopover(); } else tip.style.display = 'none';
+  }
   function wireGlobal() {
     document.addEventListener('mousemove', (e) => {
       const tip = document.getElementById('tip');
       const el = e.target.closest && e.target.closest('[data-tip]');
-      if (!el) { tip.style.display = 'none'; return; }
+      if (!el) { hideTip(); return; }
       if (tip._el !== el) { tip.innerHTML = el.getAttribute('data-tip'); tip._el = el; }
-      tip.style.display = 'block';
+      if (POP) { if (!tip.matches(':popover-open')) tip.showPopover(); } else tip.style.display = 'block';
       const r = tip.getBoundingClientRect();
       let left = e.clientX + 14, topY = e.clientY + 16;
       if (left + r.width > innerWidth - 8) left = e.clientX - r.width - 14;
@@ -862,8 +930,7 @@
   function missingBox() {
     if (!missing.length) return '';
     return '<div class="warnbox"><b>Not collected:</b> ' + missing.map(esc).join(', ') +
-      '. The SQL for these sections failed (missing grant, or an object this release does not have); the rest of the page works without them. ' +
-      'The error text is in the HTML source next to the dataset name.</div>';
+      '. Their SQL failed (missing grant, or an object this release lacks); the error text is in the HTML source next to the dataset name.</div>';
   }
   function sec(title, sub, body, end, cls) {
     return '<section class="sec' + (cls ? ' ' + cls : '') + '"><header><h2>' + esc(title) + '</h2>' + (sub ? '<p class="sub">' + sub + '</p>' : '') +
@@ -946,7 +1013,7 @@
       const runs = AUTO.filter((o) => o.con === c);
       const la = lastAuto.get(c);
       if (!runs.length) {
-        add('crit', 'No automatic statistics run in ' + esc(conName(c)) + ' in the last ' + DAYS + ' days.', 'Check the task status and the maintenance windows under Setup.');
+        add('crit', 'No automatic statistics run in ' + esc(conName(c)) + ' in the last ' + DAYS + ' days.', 'See Setup: task status and maintenance windows.');
         return;
       }
       const bad = runs.filter((o) => o.v.sev === 'crit');
@@ -961,16 +1028,16 @@
       if (GEN - la.start > 2 * DAY) add('warn', 'The last automatic run in ' + esc(conName(c)) + ' started ' + esc(fmtAgo(la.start)) + '.', 'It normally runs in every maintenance window.');
       const wins = WINS.filter((w) => w.con === c && w.maint && !w.open && w.start >= T0 && w.end > w.start);
       const empty = wins.filter((w) => !runs.some((o) => o.start >= w.start - 60e3 && o.start <= w.end));
-      if (empty.length) add('warn', esc(conName(c)) + ': ' + plural(empty.length, 'maintenance window') + ' of ' + fmtN(wins.length) + ' passed without an automatic run.', 'Last one: ' + esc(empty[empty.length - 1].name) + ' at ' + fmtT(empty[empty.length - 1].start) + '. Windows can be too short, disabled, or taken by other tasks.');
+      if (empty.length) add('warn', esc(conName(c)) + ': ' + plural(empty.length, 'maintenance window') + ' of ' + fmtN(wins.length) + ' passed without an automatic run.', 'Last: ' + esc(empty[empty.length - 1].name) + ' at ' + fmtT(empty[empty.length - 1].start) + '.');
       const atEnd = runs.filter((o) => o.window && o.end && o.window.end - o.end < 120e3 && o.window.end > o.start);
-      if (atEnd.length) add('crit', esc(conName(c)) + ': ' + plural(atEnd.length, 'run') + ' ended at the close of the maintenance window.', 'The window is too short for the work; what is left waits for the next window.');
+      if (atEnd.length) add('crit', esc(conName(c)) + ': ' + plural(atEnd.length, 'run') + ' ended at the close of the maintenance window.', 'The window is too short for the work.');
     });
     const rec = FAILLIST.filter((x) => x.runs.size >= 2 && !x.benign && (showOM || !x.om));
     if (rec.length) add('warn', '<a href="#overview/failures">' + plural(rec.length, 'object') + ' failed in more than one run</a>, for example <code>' + esc(rec[0].target) + '</code> in ' + plural(rec[0].runs.size, 'run') + '.', esc(rec[0].error));
     const cnt = appBacklogCounts();
     if (cnt.missed || cnt.failed) {
       add('crit', '<a href="#backlog?cat=' + (cnt.missed ? 'missed' : 'failed') + '">' + (cnt.missed ? plural(cnt.missed, 'application object') + ' missed by the last automatic run' : '') +
-        (cnt.missed && cnt.failed ? ', ' : '') + (cnt.failed ? plural(cnt.failed, 'object') + ' whose last gather failed' : '') + '</a>.', 'They are stale now, and the job had its chance.');
+        (cnt.missed && cnt.failed ? ', ' : '') + (cnt.failed ? plural(cnt.failed, 'object') + ' whose last gather failed' : '') + '</a>.', 'Stale now, after the job ran.');
     }
     const basic = MON.filter((m) => /^BASIC$/i.test(m.level || ''));
     if (basic.length) add('crit', 'STATISTICS_LEVEL is <b>BASIC</b> in ' + esc(META.con) + ': DML monitoring is off.', 'Nothing is counted in DBA_TAB_MODIFICATIONS, so no table ever turns stale and the automatic job regathers nothing.');
@@ -982,12 +1049,12 @@
       add(colCats.some((c) => COLCATS[c].sev === 'warn') ? 'warn' : 'info',
         '<a href="#columns">' + plural(n, 'column') + (showOM ? '' : ' in application schemas') + '</a> with doubtful statistics: ' +
         colCats.map((c) => '<a href="#columns?cat=' + c + '">' + fmtN(colCnt[c]) + ' ' + COLCAT_SHORT[c] + '</a>').join(', ') + '.',
-        'The table statistics look fine; these columns do not. See the Columns view.');
+        'Table statistics fine, column statistics not.');
     }
     const near = NEAR.filter((b) => showOM || !b.om);
     if (near.length) {
       add('info', '<a href="#backlog">' + plural(near.length, 'table or partition', 'tables and partitions') + '</a> ' + (near.length === 1 ? 'is' : 'are') + ' at least halfway to stale' + (showOM ? '' : ' in application schemas') + '.',
-        'Counted from the flushed DML counters only; changes still in memory may already have pushed some over.' + (near.length >= 2000 ? ' The report holds the first 2,000.' : ''));
+        'From the flushed DML counters only.' + (near.length >= 2000 ? ' The report holds the first 2,000.' : ''));
     }
     const gs = GATHERS.filter((o) => showOM || !o.om);
     const mf = gs.filter((o) => o.v.sev === 'crit');
@@ -1024,7 +1091,7 @@
       '</dl></section>';
 
     const cons = [...new Set(OPS.filter((o) => o.kind !== 'other').map((o) => o.con).concat(ATC.map((a) => a.con)))].sort((a, b) => a - b);
-    h += sec('When statistics were gathered', 'Each column is a day, top to bottom midnight to midnight. Click a run to open it, or an empty spot to list that day.',
+    h += sec('When statistics were gathered', 'One column per day, midnight to midnight. Click a run to open it, an empty spot to list the day.',
       '<div class="surface">' + cons.map((c) => '<div class="chart night" data-con="' + c + '">' + (cons.length > 1 ? '<div class="chart-head"><h3>' + esc(conName(c)) + '</h3></div>' : '') + '<div class="plot"></div></div>').join('') +
       '<div class="legend"><span><b class="win"></b>Maintenance window</span><span><b class="good"></b>Automatic run, complete</span><span><b class="warn"></b>Some objects failed</span><span><b class="crit"></b>Failed or did not finish</span><span><b class="dot"></b>Manual or custom gather</span><span><b class="weekend"></b>Weekend</span>' +
       '<span><b class="win-empty"></b>Window without an automatic run</span><span><b class="nowin"></b>No window opened</span></div></div>');
@@ -1039,11 +1106,11 @@
     h += '<div class="split wide-narrow">' + sec('Findings', '', '<ul class="findings">' + findings().map((x) => '<li>' + sevBadge(x.sev, '') + '<div>' + x.html + (x.more ? '<div class="more">' + x.more + '</div>' : '') + '</div></li>').join('') + '</ul>') +
       sec('Needs statistics now', '', needs) + '</div>';
 
-    h += sec('Automatic runs', 'One column per run, on the same days as above. The line is the median of the last 7 runs.',
+    h += sec('Automatic runs', 'One column per run. Line: median of the last 7.',
       '<div class="surface"><div class="plot" id="c-hist"></div>' + consLegend() + '</div>',
       seg('hist-metric', [['secs', 'Run time'], ['objects', 'Objects'], ['failed', 'Failed objects']], histMetric));
-    h += '<div class="split">' + sec('Failures', 'The same object and error, counted across runs.', '<div id="t-fail"></div>', '', 'failures') +
-      sec('Slowest objects', 'Total gather time over the period.', '<div id="t-heavy"></div>') + '</div>';
+    h += '<div class="split">' + sec('Failures', 'Same object and error, counted across runs.', '<div id="t-fail"></div>', '', 'failures') +
+      sec('Slowest objects', 'Gather time over the period.', '<div id="t-heavy"></div>') + '</div>';
     v.innerHTML = h;
 
     v.querySelectorAll('.chart.night').forEach((el) => {
@@ -1087,7 +1154,7 @@
       if (!showOM && isOM(t.con, t.parts[0])) { heavyOM.add(t.con + '|' + t.name); return; }
       const k = t.con + '|' + t.name;
       let x = heavy.get(k);
-      if (!x) heavy.set(k, x = { con: t.con, name: t.name, type: t.type, n: 0, secs: 0, max: 0, last: null });
+      if (!x) heavy.set(k, x = { con: t.con, name: t.name, type: t.type, tab: t.tab, piece: t.piece, parts: t.parts, n: 0, secs: 0, max: 0, last: null });
       x.n++; x.secs += t.secs; x.max = Math.max(x.max, t.secs);
       if (!x.last || t.start > x.last.start) x.last = t;
     });
@@ -1097,7 +1164,7 @@
       rows: hl2, sort: ['secs', -1], limit: 8, empty: 'No per-object timings recorded.',
       href: (x) => '#run/' + x.last.op.key,
       cols: [
-        { key: 'name', label: 'Object', cls: 'wrap', html: (x) => '<code>' + esc(x.name) + '</code> <span class="pill">' + esc(x.type.toLowerCase()) + '</span>' + (CONS.size > 1 ? ' <span class="pill">' + esc(conName(x.con)) + '</span>' : '') },
+        { key: 'name', label: 'Object', cls: 'wrap', html: (x) => pieceName(x, true) + (x.piece ? '' : ' <span class="pill">' + esc(x.type.toLowerCase()) + '</span>') + (CONS.size > 1 ? ' <span class="pill">' + esc(conName(x.con)) + '</span>' : '') },
         { key: 'n', label: 'Gathers', num: true, html: (x) => fmtN(x.n) },
         { key: 'secs', label: 'Total', num: true, html: (x) => '<span class="durbar">' + esc(fmtDur(x.secs)) + '<span><b style="inline-size:' + (100 * x.secs / hmax).toFixed(1) + '%"></b></span></span>' }
       ]
@@ -1132,7 +1199,7 @@
     f.kind = q.get('kind') || 'gathers'; f.con = q.get('con') || ''; f.sev = q.get('sev') || ''; f.text = q.get('q') || ''; f.day = q.get('day') || '';
     f.group = q.get('g') !== '0';
     const consAll = [...new Set(OPS.map((o) => o.con))].sort((a, b) => a - b);
-    v.innerHTML = missingBox() + sec('Runs', 'Every DBMS_STATS operation in the last ' + DAYS + ' days. Calls one job or session made back to back are grouped; open a group for its calls, open a call for its objects.',
+    v.innerHTML = missingBox() + sec('Runs', 'Every DBMS_STATS operation in the last ' + DAYS + ' days. Back-to-back calls of one job or session form a group. The text filter also matches the objects a run gathered.',
       '<div class="filters">' + seg('f-kind', [['gathers', 'All gathers'], ['auto', 'Automatic'], ['gather', 'Manual or custom'], ['all', 'Every DBMS_STATS call']], f.kind) +
       '<div id="f-sev-host"></div>' +
       (consAll.length > 1 ? '<label>Container <select id="f-con"><option value="">All</option>' + consAll.map((c) => '<option value="' + c + '">' + esc(conName(c)) + '</option>').join('') + '</select></label>' : '') +
@@ -1157,11 +1224,24 @@
       const sp = sortParam(host._t.sort);
       if (sp && sp !== '-start') params.set('s', sp);
       setBaseHash('#runs' + (params.toString() ? '?' + params.toString() : ''));
+      // Text matches the run itself, or the objects it gathered (the ones
+      // embedded in this report: a truncated run may hide a hit)
+      const hits = new Map();
+      let partial = 0;
+      const textHit = (o) => {
+        if (!f.text) return true;
+        if (!o.search) o.search = [o.op, opTarget(o), o.job, o.error, o.status, o.v.label].join(' ').toLowerCase();
+        if (o.search.includes(f.text)) return true;
+        const m = o.tasks.filter((t) => t.nameL.includes(f.text));
+        if (m.length) { hits.set(o, m); return true; }
+        if (o.truncated) partial++;
+        return false;
+      };
       const scoped = OPS.filter((o) =>
         (f.kind === 'all' || (f.kind === 'gathers' ? o.kind !== 'other' : o.kind === f.kind)) &&
         (!f.con || String(o.con) === f.con) &&
         (!f.day || dayKey(o.start) === f.day) &&
-        (!f.text || [o.op, opTarget(o), o.job, o.error, o.status, o.v.label].join(' ').toLowerCase().includes(f.text)));
+        textHit(o));
       const base = scoped.filter((o) => showOM || !o.om);
       const hiddenOM = scoped.length - base.length;
       const n = { crit: 0, warn: 0, good: 0 };
@@ -1186,7 +1266,15 @@
         });
       }
       const groups = rowsOut.filter((r) => r.members).length;
-      sel('#f-n').innerHTML = esc(plural(list.length, 'operation')) + (groups ? ', ' + esc(plural(groups, 'group')) : '') + omHint(hiddenOM);
+      sel('#f-n').innerHTML = esc(plural(list.length, 'operation')) + (groups ? ', ' + esc(plural(groups, 'group')) : '') + omHint(hiddenOM) +
+        (partial ? ' <span data-tip="' + esc(plural(partial, 'run embeds', 'runs embed') + ' only the first ' + fmtN(META.maxTasks) + ' objects; a hit there is not found. Raise max_tasks_per_run.') + '">(' + fmtN(partial) + ' searched partially)</span>' : '');
+      // the objects that matched the text, under the run's target
+      const hitText = (o) => {
+        const m = o.members ? o.members.flatMap((x) => hits.get(x) || []) : hits.get(o);
+        if (!m || !m.length) return '';
+        const names = [...new Set(m.map((t) => t.name))];
+        return '<div class="hits">' + names.slice(0, 3).map((n) => '<code>' + esc(n) + '</code>').join(', ') + (names.length > 3 ? ' +' + fmtN(names.length - 3) : '') + '</div>';
+      };
       const dmax = Math.max(1, ...rowsOut.map((o) => o.secs));
       const objs = (o) => {
         const fail = o.stats.failed + o.stats.notDone - (o.members ? 0 : o.v.expected || 0);
@@ -1206,7 +1294,7 @@
               (o.members ? ' <span class="muted">' + esc(o.ops.slice(0, 2).map((x) => x[0] + (o.ops.length > 1 ? ' \u00d7' + fmtN(x[1]) : '')).join(', ') + (o.ops.length > 2 ? ', +' + (o.ops.length - 2) + ' more' : '')) + '</span>' : '') },
           { key: 'target', label: 'Target', cls: 'wrap', val: (o) => (o.members ? o.owners.join(',') : opTarget(o)),
             html: (o) => (o.members ? (o.owners.length ? o.owners.slice(0, 3).map((x) => '<code>' + esc(x) + '</code>').join(', ') + (o.owners.length > 3 ? ' +' + (o.owners.length - 3) : '') : '') + ' <span class="muted">' + esc(plural(o.targets, 'target')) + '</span>'
-              : o.kind === 'auto' ? '<span class="muted">whole database</span>' : '<code>' + esc(opTarget(o)) + '</code>') },
+              : o.kind === 'auto' ? '<span class="muted">whole database</span>' : '<code>' + (splitTarget(o.target).length >= 2 && /table_stats$/.test(o.op) ? tabLink(o.con, splitTarget(o.target).slice(0, 2).join('.'), opTarget(o)) : esc(opTarget(o))) + '</code>') + hitText(o) },
           { key: 'n', label: 'Objects', num: true, val: (o) => o.stats.n, html: objs },
           { key: 'secs', label: 'Duration', num: true, tip: 'For a group: from its first call to the end of its last', html: (o) => '<span class="durbar">' + esc(fmtDur(o.secs)) + '<span><b style="inline-size:' + Math.max(2, 100 * o.secs / dmax).toFixed(1) + '%"></b></span></span>' },
           { key: 'job', label: 'Job and window', cls: 'nw', html: (o) => (o.job ? '<code>' + esc(o.job) + '</code>' : '<span class="muted">session ' + esc(o.sid) + '</span>') + (o.window ? ' <span class="pill">' + esc(o.window.name) + '</span>' : '') }
@@ -1293,7 +1381,7 @@
     const pk = Object.keys(o.params);
     const params = pk.length ? '<dl class="kv">' + pk.map((k) => '<dt>' + esc(k) + '</dt><dd><code>' + esc(o.params[k] === '' ? "''" : o.params[k]) + '</code></dd>').join('') + '</dl>' : '<p class="muted">No parameters recorded.</p>';
     h += '<div class="split">' + sec('Run', '', '<div class="surface">' + kv + (o.error ? '<div class="err-block">' + esc(o.error) + '</div>' : '') + '</div>') +
-      sec('Parameters', 'As the call resolved them. DEFAULT_* means the preference in force.', '<div class="surface">' + params + '</div>') + '</div>';
+      sec('Parameters', 'As resolved. DEFAULT_*: the preference in force.', '<div class="surface">' + params + '</div>') + '</div>';
 
     if (s.n) {
       const types = Object.keys(s.byType).sort((a, b) => s.byType[b].secs - s.byType[a].secs);
@@ -1322,14 +1410,14 @@
           return '<span class="' + cls + '" style="flex-grow:' + pct.toFixed(3) + '" data-tip="' + esc(tip) + '">' + (pct >= 6 ? '<em>' + esc(label) + '</em>' : '') + '</span>';
         };
         const strip = top.map((t) => segOf(typeClass(t).replace('f-', 'b-'), t.secs, t.name.split('.').slice(1).join('.') || t.name,
-          '<b>' + esc(t.name) + '</b><br>' + esc(t.type.toLowerCase()) + ', ' + esc(fmtDur(t.secs)) + ', ' + ((100 * t.secs) / tot).toFixed(0) + '% of the object time')).join('') +
+          objTip(t) + '<br>' + ((100 * t.secs) / tot).toFixed(0) + '% of the object time')).join('') +
           (restN ? segOf('b-rest', rest, plural(restN, 'other object'), '<b>' + esc(plural(restN, 'other object')) + '</b><br>' + esc(fmtDur(rest)) + ', ' + ((100 * rest) / tot).toFixed(0) + '% of the object time') : '');
-        h += sec('Where the time went', 'The slowest objects as a share of all object time (' + esc(fmtDur(tot)) + ').', '<div class="surface"><div class="strip">' + strip + '</div></div>');
+        h += sec('Where the time went', 'Slowest objects, share of all object time (' + esc(fmtDur(tot)) + '). Hover for names.', '<div class="surface"><div class="strip">' + strip + '</div></div>');
       }
-      h += sec('Objects over time', (o.tasks.length > 40 ? 'Objects that ran at the same time stack into lanes. Hover for each object.' : '') +
-        (o.window && o.window.end <= o.endEff + 60e3 ? ' The red line is the end of the window.' : ''),
+      h += sec('Objects over time', (o.tasks.length > 40 ? 'Concurrent objects stack into lanes. Hover for the object.' : 'Hover for the object.') +
+        (o.window && o.window.end <= o.endEff + 60e3 ? ' Red line: end of the window.' : ''),
         '<div class="surface"><div id="gantt"></div><div class="legend"><span><b class="s1"></b>Table</span><span><b class="s2"></b>Partition</span><span><b class="s3"></b>Index</span><span><b class="crit"></b>Failed</span><span><b class="warn"></b>Not completed</span></div></div>');
-      h += sec('Objects', o.truncated ? fmtN(o.tasks.length) + ' of ' + fmtN(s.n) + ' in this report: failed first, then slowest. Raise max_tasks_per_run to see all.' : '',
+      h += sec('Objects', (o.truncated ? fmtN(o.tasks.length) + ' of ' + fmtN(s.n) + ' in this report: failed first, then slowest. Raise max_tasks_per_run to see all. ' : '') + 'Click a name for the table.',
         '<div class="filters"><div id="o-st-host"></div><label>Type <select id="o-ty"><option value="">Any</option>' + [...new Set(o.tasks.map((t) => t.type))].sort().map((x) => '<option>' + esc(x) + '</option>').join('') + '</select></label>' +
         '<input type="search" id="o-q" placeholder="Filter objects" aria-label="Filter objects"><span class="count" id="o-n"></span></div><div id="t-obj"></div>');
     } else if (o.kind !== 'other') {
@@ -1367,7 +1455,7 @@
         renderTable(host, {
           rows: list, sort: ['secs', -1], limit: 300, empty: 'No object matches.',
           cols: [
-            { key: 'name', label: 'Object', cls: 'wrap', html: (t) => '<code>' + esc(t.name) + '</code>' },
+            { key: 'name', label: 'Object', cls: 'wrap', html: (t) => pieceName(t, true) },
             { key: 'type', label: 'Type', html: (t) => esc(t.type.toLowerCase()) },
             { key: 'status', label: 'Status', html: (t) => (t.status === 'COMPLETED' ? sevBadge('good', 'gathered') : sevBadge(t.status === 'FAILED' ? 'crit' : 'warn', t.status.toLowerCase())) },
             { key: 'start', label: 'Started', cls: 't', html: (t) => esc(fmtClock(t.start, true)) },
@@ -1454,15 +1542,14 @@
   // When the DML-monitoring counters were last written, for the staleness caveat
   function monText() {
     const newest = MON.map((m) => m.newest).filter(Boolean);
-    if (!newest.length) return 'Staleness is as of the last DML-monitoring flush. ';
-    return 'Staleness is as of the last DML-monitoring flush; the newest counters are from ' + esc(fmtT(Math.max(...newest))) + '. Changes since then are still in memory and not counted yet. ';
+    if (!newest.length) return 'As of the last DML-monitoring flush. ';
+    return 'As of the last DML-monitoring flush, newest counters ' + esc(fmtT(Math.max(...newest))) + '; later changes are still in memory. ';
   }
   function viewBacklog(q) {
     const v = document.getElementById('view');
     const f = { cat: q.get('cat') || '', con: q.get('con') || '', text: q.get('q') || '' };
     const consAll = [...new Set(BL.map((b) => b.con))].sort((a, b) => a - b);
-    v.innerHTML = missingBox() + sec('Needs statistics now', 'Tables, partitions and subpartitions that are stale or have no statistics, and why. ' + monText() +
-      'Partitions of one table with the same reason are grouped.',
+    v.innerHTML = missingBox() + sec('Needs statistics now', 'Stale or without statistics, and why. ' + monText() + 'Partitions of one table with the same reason form a group.',
       '<div class="cats" id="cats"></div><p class="cat-text" id="cat-text"></p>' +
       '<div class="filters">' +
       (consAll.length > 1 ? '<label>Container <select id="b-con"><option value="">All</option>' + consAll.map((c) => '<option value="' + c + '">' + esc(conName(c)) + '</option>').join('') + '</select></label>' : '') +
@@ -1471,7 +1558,7 @@
       '<span class="count" id="b-n"></span></div>' +
       (blTruncated ? '<p class="note" style="margin-block-end:1rem">Only the first ' + fmtN(BL.length) + ' objects are in this report (application schemas first). Raise max_backlog to see all.</p>' : '') +
       '<div id="t-bl"></div>') +
-      sec('Close to stale', 'Not stale yet, but the flushed counters alone show at least half of STALE_PERCENT changed. Unflushed changes may already have pushed them over; the next automatic run will tell.',
+      sec('Close to stale', 'At least half of STALE_PERCENT changed by the flushed counters alone. Unflushed changes may already have pushed them over.',
         '<div id="t-near"></div>');
     const sel = (id) => v.querySelector(id);
     if (sel('#b-con')) sel('#b-con').value = f.con;
@@ -1494,7 +1581,7 @@
       const cats = CAT_ORDER.filter((c) => cnt[c] || f.cat === c);
       sel('#cats').innerHTML = cats.length ? '<button type="button" class="cat" data-cat="" aria-pressed="' + !f.cat + '">All<span class="n">' + fmtN(base.length) + '</span></button>' +
         cats.map((c) => '<button type="button" class="cat" data-cat="' + c + '" aria-pressed="' + (f.cat === c) + '">' + sevBadge(CATS[c].sev, CATS[c].title) + '<span class="n">' + fmtN(cnt[c] || 0) + '</span></button>').join('') : '';
-      sel('#cat-text').textContent = f.cat ? CATS[f.cat].text : (base.length ? 'Pick a reason to see what it means and only those objects.' : 'Nothing needs statistics with these filters.');
+      sel('#cat-text').textContent = f.cat ? CATS[f.cat].text : (base.length ? 'Pick a reason.' : 'Nothing needs statistics with these filters.');
       sel('#cats').querySelectorAll('[data-cat]').forEach((b) => {
         b.onclick = () => { f.cat = b.getAttribute('data-cat'); host._t.limit = 300; apply(); };
       });
@@ -1505,16 +1592,14 @@
       const copyAll = sel('#b-copy');
       copyAll.hidden = !rowsOut.length;
       copyAll.setAttribute('data-copy', fixScript(rowsOut));
-      copyAll.setAttribute('data-tip', esc('<b>' + plural(rowsOut.length, 'statement') + ' for the rows below</b><br>Review before running: locked statistics are often locked on purpose.'));
+      copyAll.setAttribute('data-tip', esc('<b>' + plural(rowsOut.length, 'statement') + ' for the rows below</b><br>Review first: locked statistics are often locked on purpose.'));
       renderTable(host, {
         rows: rowsOut, limit: 300, empty: 'Nothing matches these filters.',
         href: (b) => (b.attempt && b.attempt.op ? '#run/' + b.attempt.op.key : null),
         kids: (r) => (r.group ? r.members : null), rowKey: (r) => r.key,
         onSort: () => apply(),
         cols: [
-          { key: 'name', label: 'Object', cls: 'wrap', html: (b) => '<code>' + esc(b.name) + '</code>' +
-            (b.group ? ' <span class="pill">' + esc(plural(b.members.length, b.type.toLowerCase())) + '</span>' : b.type && b.type !== 'TABLE' ? ' <span class="pill">' + esc(b.type.toLowerCase()) + '</span>' : '') +
-            (consAll.length > 1 ? ' <span class="pill">' + esc(conName(b.con)) + '</span>' : '') },
+          { key: 'name', label: 'Object', cls: 'wrap', html: (b) => objCell(b, consAll.length > 1) },
           { key: 'cat', label: 'Why', val: (b) => CAT_ORDER.indexOf(b.cat), html: (b) => sevBadge(CATS[b.cat].sev, CATS[b.cat].title, CATS[b.cat].text) },
           { key: 'rows', label: 'Rows', num: true, tip: 'NUM_ROWS in the current statistics', html: (b) => fmtN(b.rows) },
           { key: 'pct', label: 'Changed', num: true, tip: 'Inserts + updates + deletes since the last gather, against the row count in the statistics. The tick is STALE_PERCENT.', val: (b) => b.pct,
@@ -1582,9 +1667,7 @@
         kids: (r) => (r.group ? r.members : null), rowKey: (r) => r.key,
         empty: missing.includes('near') ? 'Not collected.' : 'Nothing is close to its stale threshold with these filters.',
         cols: [
-          { key: 'name', label: 'Object', cls: 'wrap', html: (b) => '<code>' + esc(b.name) + '</code>' +
-            (b.group ? ' <span class="pill">' + esc(plural(b.members.length, b.type.toLowerCase())) + '</span>' : b.type && b.type !== 'TABLE' ? ' <span class="pill">' + esc(b.type.toLowerCase()) + '</span>' : '') +
-            (consAll.length > 1 || CONS.size > 1 ? ' <span class="pill">' + esc(conName(b.con)) + '</span>' : '') },
+          { key: 'name', label: 'Object', cls: 'wrap', html: (b) => objCell(b, consAll.length > 1 || CONS.size > 1) },
           { key: 'rows', label: 'Rows', num: true, tip: 'NUM_ROWS in the current statistics', html: (b) => fmtN(b.rows) },
           { key: 'share', label: 'Changed', num: true, tip: 'Inserts + updates + deletes in the flushed counters, against the row count. A full bar is STALE_PERCENT; for a group, the partition closest to it.',
             html: (b) => '<span class="pctcell" data-tip="' + esc('Inserts ' + fmtN(b.ins) + '<br>Updates ' + fmtN(b.upd) + '<br>Deletes ' + fmtN(b.del) + '<br>' + b.pct.toFixed(1) + '% changed; stale from ' + b.th + '%' +
@@ -1639,8 +1722,7 @@
     const f = { cat: q.get('cat') || '', con: q.get('con') || '', text: q.get('q') || '' };
     const consAll = [...new Set(COLS.map((c) => c.con))].sort((a, b) => a - b);
     const om = COLAGG.filter((a) => a.om).reduce((a, x) => a + x.n, 0);
-    v.innerHTML = missingBox() + sec('Column statistics', 'Columns of analyzed tables whose own statistics lag behind or whose histogram cannot describe them. ' +
-      'Table-level column statistics only; tables without any statistics are under Needs statistics. Columns of one table with the same reason are grouped.',
+    v.innerHTML = missingBox() + sec('Column statistics', 'Column statistics that lag behind their table, or histograms that cannot describe the column. Table level only; tables without statistics are under Needs statistics.',
       '<div class="cats" id="cats"></div><p class="cat-text" id="cat-text"></p>' +
       '<div class="filters">' +
       (consAll.length > 1 ? '<label>Container <select id="c-con"><option value="">All</option>' + consAll.map((c) => '<option value="' + c + '">' + esc(conName(c)) + '</option>').join('') + '</select></label>' : '') +
@@ -1671,7 +1753,7 @@
       const cats = COLCAT_ORDER.filter((c) => cnt[c] || f.cat === c);
       sel('#cats').innerHTML = cats.length ? '<button type="button" class="cat" data-cat="" aria-pressed="' + !f.cat + '">All<span class="n">' + fmtN(base.length) + '</span></button>' +
         cats.map((c) => '<button type="button" class="cat" data-cat="' + c + '" aria-pressed="' + (f.cat === c) + '">' + sevBadge(COLCATS[c].sev, COLCATS[c].title) + '<span class="n">' + fmtN(cnt[c] || 0) + '</span></button>').join('') : '';
-      sel('#cat-text').textContent = f.cat ? COLCATS[f.cat].text : (base.length ? 'Pick a reason to see what it means and only those columns.' : missing.includes('cols') ? 'Not collected.' : 'No column statistics problem with these filters.');
+      sel('#cat-text').textContent = f.cat ? COLCATS[f.cat].text : (base.length ? 'Pick a reason.' : missing.includes('cols') ? 'Not collected.' : 'No column statistics problem with these filters.');
       sel('#cats').querySelectorAll('[data-cat]').forEach((b) => {
         b.onclick = () => { f.cat = b.getAttribute('data-cat'); host._t.limit = 300; apply(); };
       });
@@ -1682,14 +1764,14 @@
       const copyAll = sel('#c-copy');
       copyAll.hidden = !rowsOut.length;
       copyAll.setAttribute('data-copy', fixScript(rowsOut, colFixCmd));
-      copyAll.setAttribute('data-tip', esc('<b>One statement per table below</b><br>A default gather; it follows the table preferences, so a METHOD_OPT or ESTIMATE_PERCENT preference that caused this stays in force.'));
+      copyAll.setAttribute('data-tip', esc('<b>One statement per table below</b><br>A default gather: a METHOD_OPT or ESTIMATE_PERCENT table preference that caused this stays in force.'));
       renderTable(host, {
         rows: rowsOut, limit: 300, empty: 'Nothing matches these filters.',
         kids: (r) => (r.group ? r.members : null), rowKey: (r) => r.key,
         onSort: () => apply(),
         cols: [
-          { key: 'full', label: 'Column', cls: 'wrap', html: (c) => '<code>' + esc(c.full) + '</code>' +
-            (c.group ? ' <span class="pill">' + esc(plural(c.members.length, 'column')) + '</span>' : c.dtype ? ' <span class="pill">' + esc(c.dtype.toLowerCase()) + '</span>' : '') +
+          { key: 'full', label: 'Column', cls: 'wrap', html: (c) => '<code>' + tabLink(c.con, c.name) + (c.group ? '' : '.' + esc(c.col)) + '</code>' +
+            (c.group ? ' <span class="pill" data-tip="' + esc(c.members.slice(0, 15).map((x) => esc(x.col)).join('<br>') + (c.members.length > 15 ? '<br>+' + fmtN(c.members.length - 15) + ' more' : '')) + '">' + esc(plural(c.members.length, 'column')) + '</span>' : c.dtype ? ' <span class="pill">' + esc(c.dtype.toLowerCase()) + '</span>' : '') +
             (consAll.length > 1 ? ' <span class="pill">' + esc(conName(c.con)) + '</span>' : '') },
           { key: 'cat', label: 'Why', val: (c) => COLCAT_ORDER.indexOf(c.cat), html: (c) => sevBadge(COLCATS[c.cat].sev, COLCATS[c.cat].title, COLCATS[c.cat].text) },
           { key: 'hist', label: 'Histogram', html: (c) => (c.group ? '' : !c.hist ? '' : c.hist === 'NONE' ? '<span class="muted">none</span>' :
@@ -1720,6 +1802,330 @@
     apply();
   }
 
+  // ------------------------------------------------------------ one table
+  // Everything the report knows about one table: its statistics now, the
+  // preferences in force, whether incremental statistics are set up and in
+  // use, and every gather that touched it in the period.
+  let TABLE_INDEX = null;
+  function tableIndex() {
+    if (TABLE_INDEX) return TABLE_INDEX;
+    const by = new Map();
+    const add = (con, name) => {
+      const k = conKey(con, name);
+      let x = by.get(k);
+      if (!x) by.set(k, x = { con: con, name: name, om: isOM(con, name.split('.')[0]), tab: TABMAP.get(k) || null, gathers: 0, last: null, prefs: TPREFMAP.get(k) || [] });
+      return x;
+    };
+    TABS.forEach((t) => add(t.con, t.name));
+    const seen = new Set();
+    TASKS.forEach((t) => {
+      if (!t.tab || !t.op || t.op.kind === 'other') return;
+      const x = add(t.con, t.tab);
+      const rk = t.tab + '|' + t.op.key;
+      if (seen.has(rk)) return;
+      seen.add(rk);
+      x.gathers++;
+      if (!x.last || t.op.start > x.last.start) x.last = t.op;
+    });
+    BL.forEach((b) => add(b.con, b.owner + '.' + b.table));
+    NEAR.forEach((b) => add(b.con, b.owner + '.' + b.table));
+    COLS.forEach((c) => add(c.con, c.name));
+    TABLE_INDEX = [...by.values()];
+    return TABLE_INDEX;
+  }
+  const isTrue = (v) => /^TRUE$/i.test(v || '');
+  // The gathers of one table, one row per operation
+  function tableRuns(con, name) {
+    const runs = new Map();
+    TASKS.forEach((t) => {
+      if (t.con !== con || t.tab !== name || !t.op || t.op.kind === 'other') return;
+      let r = runs.get(t.op);
+      if (!r) runs.set(t.op, r = { op: t.op, glob: [], parts: [], idx: [], secs: 0, failed: 0, hist: 0, n: 0 });
+      (/^TABLE/.test(t.type) ? (t.piece ? r.parts : r.glob) : r.idx).push(t);
+      r.secs += t.secs || 0; r.n++;
+      if (t.status === 'FAILED') r.failed++;
+      if (t.hist.length) r.hist++;
+    });
+    return [...runs.values()].sort((a, b) => a.op.start - b.op.start);
+  }
+  // Is the incremental-statistics setup of this table consistent, and do the
+  // gathers show it working?  One row per check.
+  function incChecks(con, key, tab, runs, pref) {
+    const out = [];
+    const chk = (sev, what, value, why) => out.push({ sev: sev, what: what, value: value, why: why || '' });
+    const seenParts = new Set();
+    runs.forEach((r) => r.parts.forEach((t) => seenParts.add(t.piece)));
+    const parted = tab ? !!tab.ptype : seenParts.size > 0;
+    const nparts = (tab && tab.nparts) || seenParts.size;
+    const inc = pref('INCREMENTAL'), incOn = isTrue(inc.v);
+    const src = (p) => (p.src === 'table' ? 'table preference' : 'global preference');
+    if (!parted) {
+      chk('info', 'Partitioned', 'no', 'Incremental statistics apply to partitioned tables only.');
+      if (inc.src === 'table' && incOn) chk('warn', 'INCREMENTAL', inc.v + ' (' + src(inc) + ')', 'No effect on a table without partitions.');
+      return { checks: out, verdict: { sev: 'info', label: 'Not applicable' } };
+    }
+    chk('good', 'Partitioned', (tab && tab.ptype ? tab.ptype.toLowerCase() + (tab.subptype && tab.subptype !== 'NONE' ? ' / ' + tab.subptype.toLowerCase() : '') + ', ' : '') + plural(nparts, 'partition') + (tab && tab.interval ? ', interval' : ''), '');
+    chk(incOn ? 'good' : 'warn', 'INCREMENTAL', (inc.v || 'unknown') + ' (' + src(inc) + ')', incOn ? '' : 'Off: a changed partition makes the whole table stale, and the global statistics need a full scan.');
+    const pub = pref('PUBLISH');
+    chk(isTrue(pub.v) ? 'good' : incOn ? 'crit' : 'info', 'PUBLISH', (pub.v || 'unknown') + ' (' + src(pub) + ')', isTrue(pub.v) ? '' : 'Incremental statistics need PUBLISH=TRUE.');
+    const ep = pref('ESTIMATE_PERCENT'), epAuto = /AUTO_SAMPLE_SIZE/i.test(ep.v || '');
+    chk(epAuto ? 'good' : incOn ? 'crit' : 'info', 'ESTIMATE_PERCENT', (ep.v || 'unknown') + ' (' + src(ep) + ')', epAuto ? '' : 'Synopses are only built with AUTO_SAMPLE_SIZE. With a fixed percent every gather rescans the table for the global statistics.');
+    const gr = pref('GRANULARITY'), g = (gr.v || '').toUpperCase();
+    const grOk = /^(AUTO|ALL|DEFAULT|GLOBAL AND PARTITION|APPROX_GLOBAL AND PARTITION)$/.test(g);
+    chk(grOk ? 'good' : 'warn', 'GRANULARITY', (gr.v || 'unknown') + ' (' + src(gr) + ')', grOk ? '' : g === 'GLOBAL' ? 'Partition statistics are never gathered.' : 'Global statistics are not refreshed by these gathers.');
+    const st = pref('INCREMENTAL_STALENESS');
+    chk('info', 'INCREMENTAL_STALENESS', (st.v || 'NULL') + ' (' + src(st) + ')', /USE_STALE_PERCENT/i.test(st.v || '') ? 'A partition is regathered only past STALE_PERCENT.' : 'Any change makes a partition stale and regathered.');
+    const lvl = (TPREFMAP.get(key) || []).find((p) => p.pref === 'INCREMENTAL_LEVEL');
+    if (lvl) chk('info', 'INCREMENTAL_LEVEL', lvl.value + ' (table preference)', lvl.value === 'TABLE' ? 'A table-level synopsis too, for partition exchange.' : '');
+    const syn = SYN.get(key);
+    if (missing.includes('syn')) chk('info', 'Synopses', 'not checked', 'No access to SYS.WRI$_OPTSTAT_SYNOPSIS_HEAD$.');
+    else if (syn) {
+      const full = syn.parts >= nparts;
+      chk(full ? 'good' : 'warn', 'Synopses', fmtN(syn.parts) + ' of ' + plural(nparts, 'partition') + ', newest ' + fmtT(syn.newest),
+        full ? 'Every partition has one: the global statistics come from the synopses.' : 'Partitions without one are rescanned at the next gather of the global statistics (gathered before INCREMENTAL was set, or with a fixed ESTIMATE_PERCENT).');
+    } else chk(incOn ? 'crit' : 'info', 'Synopses', 'none', incOn ? 'No partition has a synopsis: incremental statistics have not been used on this table yet. The next gather scans every partition once to build them.' : 'Built by the first gather with INCREMENTAL=TRUE.');
+    const withGlob = runs.filter((r) => r.glob.length);
+    if (!runs.length) chk('info', 'Gathers in the period', 'none', '');
+    else if (incOn) {
+      const full = withGlob.filter((r) => nparts >= 2 && r.parts.length >= 0.9 * nparts);
+      const med = withGlob.map((r) => r.parts.length).sort((a, b) => a - b);
+      const gsecs = withGlob.reduce((a, r) => a + r.glob.reduce((x, t) => x + (t.secs || 0), 0), 0) / Math.max(1, withGlob.length);
+      if (full.length > 1) chk('warn', 'Gathers in the period', fmtN(full.length) + ' of ' + plural(withGlob.length, 'gather') + ' regathered every partition', 'Once is expected (the first incremental gather). Repeated full regathers mean the synopses are rebuilt each time: check ESTIMATE_PERCENT and INCREMENTAL_STALENESS, and the parameters of manual gathers below.');
+      else if (withGlob.length) chk('good', 'Gathers in the period', plural(withGlob.length, 'gather') + ', typically ' + plural(med[Math.floor(med.length / 2)], 'partition') + ' each, global statistics in ' + fmtDur(gsecs), full.length ? 'One gather took every partition: the first incremental gather.' : 'Only changed partitions were regathered.');
+      else chk('info', 'Gathers in the period', plural(runs.length, 'gather') + ', partitions only', 'The global statistics were not touched.');
+    } else if (withGlob.length) {
+      const gsecs = withGlob.reduce((a, r) => a + r.glob.reduce((x, t) => x + (t.secs || 0), 0), 0) / withGlob.length;
+      chk('info', 'Gathers in the period', plural(withGlob.length, 'gather') + ' of the global statistics, ' + fmtDur(gsecs) + ' each on average', 'The whole table is scanned each time.');
+    }
+    const worst = out.reduce((w, c) => (SEV_RANK[c.sev] > SEV_RANK[w] ? c.sev : w), 'good');
+    const verdict = worst === 'crit' ? { sev: 'crit', label: 'Broken' } : worst === 'warn' ? { sev: 'warn', label: incOn ? 'Needs attention' : 'Off' } : { sev: 'good', label: incOn ? 'In use' : 'Off' };
+    return { checks: out, verdict: verdict };
+  }
+  // Gathers of one table over the period: one column per gather, stacked
+  // by what it took (global, partitions, indexes)
+  function tableRunsSVG(width, runs, metric) {
+    const ax = dayAxis(width);
+    const top = 8, H = 150, bottom = 22;
+    const parts = (r) => (metric === 'secs' ? [r.glob, r.parts, r.idx].map((l) => l.reduce((a, t) => a + (t.secs || 0), 0)) : [r.glob.length, r.parts.length, r.idx.length]);
+    const max = niceMax(Math.max(0, ...runs.map((r) => parts(r).reduce((a, b) => a + b, 0))));
+    const y = (v) => top + (H - top - bottom) * (1 - v / max);
+    const fmt = metric === 'secs' ? fmtDur : compact;
+    let s = '<svg width="' + width + '" height="' + H + '" role="img" aria-label="Gathers of this table over time">';
+    for (let i = 0; i < ax.nd; i++) {
+      if (isWeekend(ax.d0 + i * DAY)) s += '<rect class="weekend" x="' + (PLOT_L + i * ax.cw) + '" y="' + top + '" width="' + ax.cw + '" height="' + (H - top - bottom) + '"/>';
+    }
+    [0, max / 2, max].forEach((v) => {
+      s += '<line class="' + (v ? 'grid' : 'axis') + '" x1="' + PLOT_L + '" x2="' + (PLOT_L + ax.W) + '" y1="' + y(v) + '" y2="' + y(v) + '"/>';
+      s += '<text x="' + (PLOT_L - 8) + '" y="' + (y(v) + 4) + '" text-anchor="end">' + esc(v ? fmt(v) : '0') + '</text>';
+    });
+    const w = Math.max(3, Math.min(10, ax.cw * 0.3));
+    runs.forEach((r) => {
+      const cx = ax.x(r.op.start);
+      const seg = parts(r);
+      let base = 0;
+      s += '<rect class="hit" x="' + (cx - 6) + '" y="' + top + '" width="12" height="' + (H - top - bottom) + '" data-href="#run/' + r.op.key + '" data-tip="' + esc(tableRunTip(r)) + '"/>';
+      ['f-s1', 'f-s2', 'f-s3'].forEach((cls, i) => {
+        if (!(seg[i] > 0)) return;
+        const y1 = y(base + seg[i]), y0 = y(base);
+        s += '<rect class="mark ' + (r.failed && i === 0 ? 'f-crit' : cls) + '" pointer-events="none" x="' + (cx - w / 2) + '" y="' + y1 + '" width="' + w + '" height="' + Math.max(1, y0 - y1) + '"/>';
+        base += seg[i];
+      });
+    });
+    s += dayLabels(ax, H - 4);
+    return s + '</svg>';
+  }
+  function tableRunTip(r) {
+    const o = r.op;
+    const names = [...new Set(r.parts.map((t) => t.piece))];
+    return '<b>' + esc(opLabel(o)) + (o.kind === 'auto' ? '' : ' ' + esc(opTarget(o))) + '</b><br>' + esc(fmtT(o.start, true)) + ', ' + esc(o.v.label) +
+      '<br>Global statistics: ' + (r.glob.length ? esc(fmtDur(r.glob.reduce((a, t) => a + (t.secs || 0), 0))) + (r.glob.some((t) => t.status === 'FAILED') ? ' <span class="muted">failed</span>' : '') : 'not gathered') +
+      '<br>Partitions: ' + (names.length ? fmtN(names.length) + ' <span class="muted">' + esc(names.slice(0, 6).join(', ')) + (names.length > 6 ? ', +' + fmtN(names.length - 6) : '') + '</span>' : 'none') +
+      '<br>Indexes: ' + (r.idx.length ? fmtN(r.idx.length) : 'none') +
+      '<br>' + esc(fmtDur(r.secs)) + (r.hist ? ', histograms on ' + plural(r.hist, 'object') : '') + (r.failed ? ', <span class="muted">' + plural(r.failed, 'object') + ' failed</span>' : '');
+  }
+  // Which partition each gather took: partitions down, gathers across
+  function partMatrixSVG(width, runs, nparts) {
+    const seen = new Map();
+    runs.forEach((r) => r.parts.forEach((t) => { const x = seen.get(t.piece); if (!x || t.start > x) seen.set(t.piece, t.start || 0); }));
+    const MAXR = 120;
+    let names = [...seen.keys()].sort();
+    const cut = names.length > MAXR;
+    if (cut) names = [...seen.entries()].sort((a, b) => b[1] - a[1]).slice(0, MAXR).map((e) => e[0]).sort();
+    const rowsAll = ['table (global)'].concat(names);
+    const L = 190, R = 8, top = 4, bottom = 30, rh = 14;
+    const W = Math.max(200, width - L - R);
+    const cw = Math.max(5, Math.min(22, W / runs.length));
+    const H = top + rowsAll.length * rh + bottom;
+    let s = '<svg width="' + (L + runs.length * cw + R) + '" height="' + H + '" role="img" aria-label="Which partitions each gather took">';
+    rowsAll.forEach((n, i) => {
+      s += '<text x="' + (L - 8) + '" y="' + (top + i * rh + 11) + '" text-anchor="end"' + (i ? '' : ' style="fill:var(--ink-2)"') + '>' + esc(shortName(n, 26)) + '</text>';
+    });
+    runs.forEach((r, j) => {
+      const x = L + j * cw;
+      const cells = new Map();
+      r.glob.forEach((t) => cells.set(rowsAll[0], t));
+      r.parts.forEach((t) => cells.set(t.piece, t));
+      rowsAll.forEach((n, i) => {
+        const t = cells.get(n);
+        const y = top + i * rh;
+        if (!t) { s += '<rect class="cell-empty" x="' + (x + 0.5) + '" y="' + (y + 0.5) + '" width="' + (cw - 1) + '" height="' + (rh - 1) + '"/>'; return; }
+        s += '<rect class="mark ' + (i ? typeClass(t) : t.status === 'FAILED' ? 'f-crit' : t.status !== 'COMPLETED' ? 'f-warn' : 'f-s1') + '" x="' + (x + 0.5) + '" y="' + (y + 0.5) + '" width="' + (cw - 1) + '" height="' + (rh - 1) + '" rx="2" data-href="#run/' + r.op.key + '" data-tip="' +
+          esc('<b>' + esc(i ? n : 'global statistics') + '</b><br>' + esc(opLabel(r.op)) + ', ' + esc(fmtT(r.op.start, true)) + '<br>' + esc(t.status.toLowerCase()) + ', ' + esc(fmtDur(t.secs)) + (t.hist.length ? '<br>Histograms: ' + esc(t.hist.join(', ')) : '')) + '"/>';
+      });
+    });
+    // one date label per ~70 px
+    const every = Math.max(1, Math.ceil(70 / cw));
+    let lastDay = '';
+    runs.forEach((r, j) => {
+      if (j % every) return;
+      const d = fmtT(r.op.start).slice(5, 10);
+      s += '<text x="' + (L + j * cw + cw / 2) + '" y="' + (H - 8) + '" text-anchor="middle">' + esc(d === lastDay ? fmtClock(r.op.start) : d) + '</text>';
+      lastDay = d;
+    });
+    const note = (cut ? 'The ' + MAXR + ' most recently gathered of ' + plural(seen.size, 'partition') + '. ' : '') +
+      (nparts > seen.size ? plural(nparts - seen.size, 'partition') + ' of ' + fmtN(nparts) + ' not gathered in the period.' : '');
+    return { svg: s + '</svg>', note: note };
+  }
+  let tabMetric = 'objects';
+  function viewTable(q, conStr, nameEnc) {
+    const v = document.getElementById('view');
+    const name = nameEnc ? decodeURIComponent(nameEnc) : '';
+    const con = conStr ? Number(conStr) : null;
+    const text = (q.get('q') || '').toLowerCase();
+    let h = missingBox();
+    h += '<div class="filters tb-find"><input type="search" id="tb-q" placeholder="Find a table: owner.table" aria-label="Find a table" value="' + esc(text) + '"><span class="count" id="tb-n"></span></div>';
+    if (!name) {
+      h += sec('Tables', 'Tables a gather touched in the period, with a table preference, or partitioned. Open one for its statistics, preferences, incremental setup and gather history.', '<div id="tb-list"></div>');
+      v.innerHTML = h;
+      const host = v.querySelector('#tb-list');
+      host._t = { sort: parseSort(q.get('s'), ['gathers', -1]), limit: 300 };
+      const box = v.querySelector('#tb-q');
+      const apply = () => {
+        const t = box.value.trim().toLowerCase();
+        const params = new URLSearchParams();
+        if (t) params.set('q', t);
+        const sp = sortParam(host._t.sort);
+        if (sp && sp !== '-gathers') params.set('s', sp);
+        setBaseHash('#table' + (params.toString() ? '?' + params.toString() : ''));
+        const all = tableIndex().filter((x) => !t || x.name.toLowerCase().includes(t));
+        const list = all.filter((x) => showOM || !x.om);
+        v.querySelector('#tb-n').innerHTML = esc(plural(list.length, 'table')) + omHint(all.length - list.length);
+        renderTable(host, {
+          rows: list, empty: 'No table matches.', href: (x) => tabHref(x.con, x.name), onSort: () => apply(),
+          cols: [
+            { key: 'name', label: 'Table', cls: 'wrap', html: (x) => '<code>' + esc(x.name) + '</code>' + (CONS.size > 1 ? ' <span class="pill">' + esc(conName(x.con)) + '</span>' : '') },
+            { key: 'parts', label: 'Partitions', num: true, val: (x) => (x.tab ? x.tab.nparts : null), html: (x) => (x.tab && x.tab.ptype ? fmtN(x.tab.nparts || 0) + ' <span class="muted">' + esc(x.tab.ptype.toLowerCase()) + '</span>' : '') },
+            { key: 'inc', label: 'Incremental', val: (x) => { const p = x.prefs.find((p) => p.pref === 'INCREMENTAL'); return p ? p.value : null; },
+              html: (x) => { const p = x.prefs.find((p) => p.pref === 'INCREMENTAL'); return p ? '<code>' + esc(p.value) + '</code>' : (x.tab && x.tab.ptype ? '<span class="muted">' + esc(PREFS.get('INCREMENTAL') || '') + '</span>' : ''); } },
+            { key: 'rows', label: 'Rows', num: true, val: (x) => (x.tab ? x.tab.rows : null), html: (x) => (x.tab ? fmtN(x.tab.rows) : '') },
+            { key: 'analyzed', label: 'Analyzed', cls: 't', val: (x) => (x.tab ? x.tab.analyzed : null), html: (x) => (x.tab ? (x.tab.analyzed ? esc(fmtT(x.tab.analyzed)) : '<span class="err">never</span>') : '') },
+            { key: 'stale', label: 'Now', val: (x) => (x.tab ? (x.tab.stale ? 1 : 0) + (x.tab.pStale ? 1 : 0) : null),
+              html: (x) => (!x.tab ? '' : x.tab.stale ? sevBadge('warn', 'stale') : x.tab.pStale ? sevBadge('warn', plural(x.tab.pStale, 'stale partition')) : x.tab.pMissing ? sevBadge('warn', plural(x.tab.pMissing, 'partition') + ' without statistics') : x.tab.analyzed ? sevBadge('good', 'fresh') : '') },
+            { key: 'gathers', label: 'Gathers', num: true, tip: 'Operations that touched the table or its partitions and indexes in the period', html: (x) => fmtN(x.gathers) },
+            { key: 'last', label: 'Last gather', cls: 't', val: (x) => (x.last ? x.last.start : null), html: (x) => (x.last ? esc(fmtT(x.last.start)) : '') }
+          ]
+        });
+      };
+      let qt;
+      box.oninput = () => { clearTimeout(qt); qt = setTimeout(apply, 180); };
+      apply();
+      return;
+    }
+    const key = conKey(con, name);
+    const tab = TABMAP.get(key) || null;
+    const owner = name.split('.')[0], tname = name.split('.').slice(1).join('.');
+    const runs = tableRuns(con, name);
+    const prefs = TPREFMAP.get(key) || [];
+    const pref = (n) => { const p = prefs.find((x) => x.pref === n); return p ? { v: p.value, src: 'table' } : { v: PREFS.get(n), src: 'global' }; };
+    const bl = BL.filter((b) => b.con === con && b.owner === owner && b.table === tname);
+    const near = NEAR.filter((b) => b.con === con && b.owner === owner && b.table === tname);
+    const cols = COLS.filter((c) => c.con === con && c.name === name);
+    const inc = incChecks(con, key, tab, runs, pref);
+    const nparts = (tab && tab.nparts) || 0;
+
+    const facts = [];
+    if (CONS.size > 1) facts.push(['Container', esc(conName(con))]);
+    if (tab) {
+      facts.push(['Partitioning', tab.ptype ? esc(tab.ptype.toLowerCase()) + (tab.subptype && tab.subptype !== 'NONE' ? ' / ' + esc(tab.subptype.toLowerCase()) : '') + ', ' + esc(plural(nparts, 'partition')) + (tab.interval ? ', interval' : '') : 'none']);
+      facts.push(['Rows', tab.rows != null ? fmtN(tab.rows) + ' <span class="muted">(' + fmtN(tab.blocks) + ' blocks, in the statistics)</span>' : '<span class="muted">no statistics</span>']);
+      facts.push(['Statistics', (tab.analyzed ? esc(fmtT(tab.analyzed)) + ' <span class="muted">(' + esc(fmtAgo(tab.analyzed)) + ')</span> ' + (tab.stale ? sevBadge('warn', 'stale') : sevBadge('good', 'fresh')) : '<span class="err">never gathered</span>') +
+        (tab.locked ? ' <span class="pill">locked ' + esc(tab.locked.toLowerCase()) + '</span>' : '')]);
+      if (tab.ptype) facts.push(['Partitions', esc(fmtN(nparts)) + (tab.pStale ? ', <span class="err">' + esc(fmtN(tab.pStale)) + ' stale</span>' : '') + (tab.pMissing ? ', <span class="err">' + esc(fmtN(tab.pMissing)) + ' without statistics</span>' : '') +
+        (tab.pOldest ? '<br><span class="muted">analyzed between ' + esc(fmtT(tab.pOldest)) + ' and ' + esc(fmtT(tab.pNewest)) + '</span>' : '')]);
+    } else {
+      facts.push(['Statistics', '<span class="muted">not in this report (max_backlog reached, or the table is gone)</span>']);
+    }
+    const auto = runs.filter((r) => r.op.kind === 'auto').length;
+    facts.push(['Gathers in ' + DAYS + ' days', runs.length ? fmtN(runs.length) + ' <span class="muted">(' + fmtN(auto) + ' automatic, ' + fmtN(runs.length - auto) + ' manual or custom)</span>, last ' + esc(fmtT(runs[runs.length - 1].op.start)) : '<span class="muted">none</span>']);
+    const now = [];
+    if (bl.length) {
+      const cnt = {};
+      bl.forEach((b) => { cnt[b.cat] = (cnt[b.cat] || 0) + 1; });
+      now.push('<a href="#backlog?q=' + encodeURIComponent(name.toLowerCase()) + '">' + esc(plural(bl.length, 'object')) + ' need statistics</a>: ' + CAT_ORDER.filter((c) => cnt[c]).map((c) => sevBadge(CATS[c].sev, fmtN(cnt[c]) + ' ' + CATS[c].title.toLowerCase(), CATS[c].text)).join(' '));
+    }
+    if (near.length) now.push('<a href="#backlog?q=' + encodeURIComponent(name.toLowerCase()) + '">' + esc(plural(near.length, 'object')) + ' close to stale</a>');
+    if (cols.length) now.push('<a href="#columns?q=' + encodeURIComponent(name.toLowerCase()) + '">' + esc(plural(cols.length, 'column')) + ' with doubtful statistics</a>');
+    facts.push(['Needs attention', now.length ? now.join('<br>') : '<span class="muted">nothing</span>']);
+    const cmd = fixScript([{ con: con, owner: owner, table: tname, locked: tab && tab.locked, cat: '' }]);
+    facts.push(['Gather', '<button type="button" class="copy" data-copy="' + esc(cmd) + '" data-tip="' + esc('<code>' + esc(cmd).replace(/\n/g, '<br>') + '</code><br><span class="muted">Click to copy</span>') + '">Copy statement</button>']);
+    const kv = '<dl class="kv">' + facts.map((f) => '<dt>' + f[0] + '</dt><dd>' + f[1] + '</dd>').join('') + '</dl>';
+    const KEYP = ['INCREMENTAL', 'INCREMENTAL_STALENESS', 'INCREMENTAL_LEVEL', 'PUBLISH', 'ESTIMATE_PERCENT', 'GRANULARITY', 'METHOD_OPT', 'STALE_PERCENT', 'CASCADE', 'DEGREE', 'CONCURRENT', 'NO_INVALIDATE', 'OPTIONS'];
+    const prefRows = KEYP.filter((p) => prefs.some((x) => x.pref === p) || PREFS.has(p)).map((p) => {
+      const x = pref(p);
+      return '<tr' + (x.src === 'table' ? ' class="own"' : '') + '><td>' + esc(p) + '</td><td><code>' + esc(x.v == null ? '' : x.v) + '</code></td><td class="muted">' + (x.src === 'table' ? 'table' : con !== META.conId ? '<span data-tip="' + esc('Global preference of ' + esc(META.con) + ', the container the report ran in') + '">global*</span>' : 'global') + '</td></tr>';
+    }).concat(prefs.filter((x) => KEYP.indexOf(x.pref) < 0).map((x) => '<tr class="own"><td>' + esc(x.pref) + '</td><td><code>' + esc(x.value) + '</code></td><td class="muted">table</td></tr>'));
+    const prefTable = '<div class="tablewrap"><table class="prefs-t"><thead><tr><th>Preference</th><th>Value</th><th>Set at</th></tr></thead><tbody>' + prefRows.join('') + '</tbody></table></div>';
+
+    h += '<section class="sec tb-head"><header><h2><code>' + esc(name) + '</code></h2>' + (CONS.size > 1 ? '<span class="pill">' + esc(conName(con)) + '</span>' : '') + '</header></section>';
+    h += sec('Incremental statistics', '', '<div class="surface"><div class="tablewrap"><table class="checks"><tbody>' +
+      inc.checks.map((c) => '<tr><td>' + sevBadge(c.sev, c.what) + '</td><td>' + esc(c.value) + '</td><td class="muted wrap">' + esc(c.why) + '</td></tr>').join('') +
+      '</tbody></table></div></div>', sevBadge(inc.verdict.sev, inc.verdict.label));
+    h += '<div class="split">' + sec('Statistics now', '', '<div class="surface">' + kv + '</div>') +
+      sec('Preferences in force', 'Table preferences override the global ones.', '<div class="surface">' + prefTable + '</div>') + '</div>';
+    if (runs.length) {
+      h += sec('Gathers over time', 'One column per gather. Hover for what it took, click to open it.',
+        '<div class="surface"><div class="plot" id="tb-runs"></div><div class="legend"><span><b class="s1"></b>Global (table) statistics</span><span><b class="s2"></b>Partitions</span><span><b class="s3"></b>Indexes</span><span><b class="crit"></b>Failed</span></div></div>',
+        seg('tb-metric', [['objects', 'Objects'], ['secs', 'Time']], tabMetric));
+      if (runs.some((r) => r.parts.length)) {
+        h += sec('Partitions per gather', 'A filled cell: the gather took that partition. With incremental statistics in use, only changed partitions fill and the global row is fast.',
+          '<div class="surface"><div class="tablewrap" id="tb-matrix"></div><div class="legend"><span><b class="s1"></b>Global</span><span><b class="s2"></b>Partition</span><span><b class="crit"></b>Failed</span><span><b class="warn"></b>Not completed</span></div><p class="note" id="tb-matrix-note"></p></div>');
+      }
+      h += sec('Gathers', '', '<div id="tb-gathers"></div>');
+    } else {
+      h += sec('Gathers', '', '<p class="muted">No gather touched this table in the last ' + DAYS + ' days.</p>');
+    }
+    v.innerHTML = h;
+    const box = v.querySelector('#tb-q');
+    let qt;
+    box.oninput = () => { clearTimeout(qt); qt = setTimeout(() => { location.hash = '#table?q=' + encodeURIComponent(box.value.trim().toLowerCase()); }, 250); };
+    if (!runs.length) return;
+    const drawRuns = () => { const p = v.querySelector('#tb-runs'); p.innerHTML = tableRunsSVG(p.clientWidth, runs, tabMetric); };
+    drawRuns();
+    wireSeg(v, 'tb-metric', (val) => { tabMetric = val; drawRuns(); });
+    const mx = v.querySelector('#tb-matrix');
+    if (mx) {
+      const m = partMatrixSVG(mx.clientWidth, runs, nparts);
+      mx.innerHTML = m.svg;
+      v.querySelector('#tb-matrix-note').textContent = m.note;
+    }
+    const PARAMS = ['partname', 'granularity', 'estimate_percent', 'method_opt', 'cascade', 'degree'];
+    renderTable(v.querySelector('#tb-gathers'), {
+      rows: runs.slice().reverse(), sort: ['start', -1], limit: 100, href: (r) => '#run/' + r.op.key,
+      cols: [
+        { key: 'start', label: 'Started', cls: 't', desc: true, val: (r) => r.op.start, html: (r) => esc(fmtT(r.op.start, true)) },
+        { key: 'op', label: 'Run', cls: 'wrap', val: (r) => opLabel(r.op), html: (r) => esc(opLabel(r.op)) + (r.op.kind === 'auto' ? '' : ' <code>' + esc(opTarget(r.op)) + '</code>') + (r.op.job ? ' <span class="pill">' + esc(r.op.job) + '</span>' : '') },
+        { key: 'sev', label: 'Outcome', val: (r) => SEV_RANK[r.op.v.sev], html: (r) => sevBadge(r.op.v.sev, r.op.v.label, r.op.v.why) },
+        { key: 'glob', label: 'Global', num: true, tip: 'Time of the table-level (global) statistics', val: (r) => (r.glob.length ? r.glob.reduce((a, t) => a + (t.secs || 0), 0) : null),
+          html: (r) => (r.glob.length ? (r.glob.some((t) => t.status === 'FAILED') ? '<span class="err">failed</span> ' : '') + esc(fmtDur(r.glob.reduce((a, t) => a + (t.secs || 0), 0))) : '<span class="muted">no</span>') },
+        { key: 'parts', label: 'Partitions', num: true, val: (r) => r.parts.length, html: (r) => (r.parts.length ? '<span data-tip="' + esc([...new Set(r.parts.map((t) => t.piece))].slice(0, 20).map(esc).join('<br>') + (r.parts.length > 20 ? '<br>+' + fmtN(r.parts.length - 20) + ' more' : '')) + '">' + fmtN(r.parts.length) + (nparts ? ' <span class="muted">of ' + fmtN(nparts) + '</span>' : '') + ', ' + esc(fmtDur(r.parts.reduce((a, t) => a + (t.secs || 0), 0))) + '</span>' : '') },
+        { key: 'idx', label: 'Indexes', num: true, val: (r) => r.idx.length, html: (r) => (r.idx.length ? fmtN(r.idx.length) : '') },
+        { key: 'hist', label: 'Histograms', num: true, tip: 'Objects on which histograms were created', html: (r) => (r.hist ? fmtN(r.hist) : '') },
+        { key: 'secs', label: 'Time', num: true, html: (r) => esc(fmtDur(r.secs)) },
+        { key: 'params', label: 'Parameters', cls: 'wrap', val: () => null, html: (r) => '<div class="pills">' + PARAMS.filter((k) => r.op.params[k] != null && r.op.params[k] !== '' && !/^DEFAULT_|^NULL$/.test(r.op.params[k])).map((k) => '<span class="pill">' + esc(k) + '=' + esc(r.op.params[k]) + '</span>').join(' ') + '</div>' }
+      ]
+    });
+  }
+
   // ------------------------------------------------------------ setup
   function viewConfig() {
     const v = document.getElementById('view');
@@ -1728,7 +2134,7 @@
       (ATC.length ? ATC.map((a) => '<tr><td>' + esc(conName(a.con)) + '</td><td>' + sevBadge(a.status === 'ENABLED' ? 'good' : 'crit', a.status.toLowerCase()) + '</td><td><code>' + esc(a.group) + '</code></td><td class="num">' + esc(fmtDur(a.mean)) +
         '</td><td class="num">' + esc(fmtDur(a.max7)) + '</td><td class="muted">' + esc(a.attrs) + '</td></tr>').join('') : '<tr><td colspan="6" class="muted">No rows.</td></tr>') + '</tbody></table></div></div>';
     h += sec('Automatic statistics task', 'From DBA_AUTOTASK_CLIENT.', atc);
-    h += sec('Scheduler windows', 'The automatic job runs only while a window of its group is open.', '<div class="surface"><div id="t-win"></div></div>');
+    h += sec('Scheduler windows', 'The automatic job runs only inside an open window of its group.', '<div class="surface"><div id="t-win"></div></div>');
     const prefNotes = {
       AUTOSTATS_TARGET: 'AUTO: all schemas. ORACLE: only Oracle-owned schemas.',
       STALE_PERCENT: 'Percent of rows changed before a table counts as stale.',
@@ -1747,7 +2153,7 @@
         '<dt>History kept</dt><dd>' + esc(META.retention) + ' days; the oldest operation still available is from ' + esc(fmtT(ts(META.availability))) + '</dd>' +
         '<dt>Collected as</dt><dd>' + esc(META.user) + ' in ' + esc(META.con) + '</dd>' +
         '<dt>Rows embedded</dt><dd>' + fmtN(OPS.length) + ' operations, ' + fmtN(TASKS.length) + ' objects (at most ' + fmtN(META.maxTasks) + ' per run), ' + fmtN(BL.length) + ' needing statistics, ' + fmtN(COLS.length) + ' columns, ' + fmtN(NEAR.length) + ' close to stale</dd></dl></div>') + '</div>';
-    h += sec('DML monitoring', 'DBA_TAB_MODIFICATIONS: what the staleness checks see. Changes since the newest row are still in memory and counted at the next flush; this report does not flush them.',
+    h += sec('DML monitoring', 'DBA_TAB_MODIFICATIONS. Changes since the newest row are still in memory; this report does not flush them.',
       '<div class="surface"><div class="tablewrap"><table><thead><tr><th>Container</th><th class="num">Tables and partitions with counters</th><th>Newest counters</th><th>STATISTICS_LEVEL</th></tr></thead><tbody>' +
       (MON.length ? MON.map((m) => '<tr><td>' + esc(conName(m.con)) + '</td><td class="num">' + fmtN(m.n) + '</td><td>' + esc(fmtT(m.newest)) + (m.newest ? ' <span class="muted">' + esc(GEN - m.newest < 60e3 ? 'while the report ran' : fmtAgo(m.newest)) + '</span>' : '') +
         '</td><td>' + (/^BASIC$/i.test(m.level || '') ? sevBadge('crit', 'BASIC: monitoring off') : '<code>' + esc(m.level) + '</code>') + '</td></tr>').join('')
@@ -1790,7 +2196,7 @@
   function wireDrawer() {
     const d = document.getElementById('drawer');
     d.addEventListener('close', () => {
-      document.getElementById('tip').style.display = 'none';
+      hideTip();
       if (!closingByRoute && location.hash.startsWith('#run/')) location.hash = baseHash || '#overview';
     });
     d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
@@ -1811,13 +2217,14 @@
     if (view === 'runs') viewRuns(q);
     else if (view === 'backlog') viewBacklog(q);
     else if (view === 'columns') viewColumns(q);
+    else if (view === 'table') viewTable(q, path[1], path.slice(2).join('/'));
     else if (view === 'config') viewConfig();
     else viewOverview(path[1]);
     if (!(view === 'overview' && path[1])) window.scrollTo(0, keep);
   }
   function route() {
     const raw = location.hash.replace(/^#/, '') || 'overview';
-    document.getElementById('tip').style.display = 'none';
+    hideTip();
     if (raw.startsWith('run/')) {
       if (renderedBase === null) renderBase(baseHash ? baseHash.slice(1) : 'overview');
       const p = raw.split('/');
