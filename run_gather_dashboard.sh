@@ -87,7 +87,8 @@ size=$(wc -c < "$out" | awk '{ s = $1; u = "bytes"
     if (s >= 1048576) { s = s / 1048576; u = "MB" } else if (s >= 1024) { s = s / 1024; u = "KB" }
     if (u == "bytes") printf "%d %s", s, u; else printf "%.1f %s", s, u }')
 took=''
-[ -z "$start" ] || took=" in $((SECONDS - start)) s"
+# ksh93 counts SECONDS with decimals; dash has no SECONDS at all
+[ -z "$start" ] || took=$(awk -v a="$start" -v b="$SECONDS" 'BEGIN { printf " in %d s", b - a + 0.5 }')
 say "Done$took: $out ($size)"
 [ "$quiet" != 1 ] || echo "$out"
 
