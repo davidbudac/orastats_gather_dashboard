@@ -20,12 +20,40 @@ QUIET=1 ./run_gather_dashboard.sh '/ as sysdba'      # cron: only warnings and t
 The wrapper says when it has connected (database, user, container), when the SQL
 script is running, and when it is done (time, report path and size). A failed login
 or a section that failed shows with its ORA- error. The password in a connect string
-is masked.
+is masked. Report filenames include the database, container, history in days,
+and creation time. Scoped reports also include `_schema_<name>` and, when selected,
+`_table_<name>`.
+
+Collect only a PDB, schema, or table (options can be combined):
+
+```bash
+./run_gather_dashboard.sh '/ as sysdba' 7 --pdb PDB1
+./run_gather_dashboard.sh user/pw@svc --schema HR
+./run_gather_dashboard.sh '/ as sysdba' 7 --pdb PDB1 --schema HR --table EMPLOYEES
+# Environment equivalents: PDB=PDB1 SCHEMA=HR TABLE=EMPLOYEES
+```
+
+Names are unquoted Oracle identifiers, matched exactly after uppercasing; a table
+requires its schema. PDB selection switches container and requires `SET CONTAINER`;
+a failed switch stops collection. Schema/table selection filters in SQL, before
+row caps and aggregation. Table scope includes partitions, subpartitions, and
+index tasks mapped to that table. Broad database/schema gathers are retained when
+their recorded tasks touched the target; explicit target calls are retained even
+without tasks. Calls without either evidence are excluded. No matching history
+produces empty history datasets, while current target statistics still appear.
+
+Only matching operations and their job executions/windows are included. Job
+executions are matched by container, job name, and operation start within the run.
+Task totals, backlog, columns, monitoring counters, preferences, and synopses are
+scoped. Operation/job/window elapsed time and CPU remain whole-run metrics: Oracle
+does not attribute those to individual objects. Container configuration remains
+as context; container-wide automatic job averages are omitted in scoped reports.
+The header and each view explain the collection scope.
 
 Or from SQL*Plus / SQLcl directly (all arguments optional):
 
 ```
-SQL> @gather_dashboard.sql [days] [max_tasks_per_run] [max_backlog] [output_file]
+SQL> @gather_dashboard.sql [days] [max_tasks_per_run] [max_backlog] [output_file] [schema] [table]
 ```
 
 | Argument | Default | Meaning |
@@ -33,9 +61,13 @@ SQL> @gather_dashboard.sql [days] [max_tasks_per_run] [max_backlog] [output_file
 | days | 31 | History shown. Stats history retention is 31 days by default; older runs are already purged. |
 | max_tasks_per_run | 2000 | Per-object rows embedded per run (failed first, then slowest). Run totals are always exact. |
 | max_backlog | 5000 | Objects still needing statistics, columns with doubtful statistics, and tables for the Table view embedded (application schemas first). |
-| output_file | `gather_dashboard_<db>_<con>_<time>.html` | |
+| schema / table | All | Optional exact target names; use `-` for omitted positional arguments. Connect to the desired PDB first. |
+| output_file | `gather_dashboard_<db>_<con>_<days>days_<time>.html` | |
 
-Scope follows the connection: in `CDB$ROOT` as a common user it covers every open
+For example, `@gather_dashboard.sql 7 2000 5000 - HR EMPLOYEES` uses a
+target-specific default filename.
+
+Without target options, scope follows the connection: in `CDB$ROOT` as a common user it covers every open
 container; inside a PDB, that PDB; on a non-CDB, the database. It reads the `CDB_*`
 views, so `SELECT_CATALOG_ROLE` (plus `CONTAINER_DATA` for other PDBs from root) is
 enough. A section that fails (missing grant) shows as "not collected"; the rest works.

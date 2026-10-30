@@ -21,6 +21,8 @@ SELECT '<script>D.meta = ' || JSON_OBJECT(
            'dbtz'         VALUE '&dbtz',
            'generated'    VALUE TO_CHAR(SYS_EXTRACT_UTC(SYSTIMESTAMP), '&ts_fmt'),
            'days'         VALUE &days,
+           'scopeSchema'  VALUE :scope_schema,
+           'scopeTable'   VALUE :scope_table,
            'maxTasks'     VALUE &max_tasks,
            'maxBacklog'   VALUE &max_backlog,
            'retention'    VALUE DBMS_STATS.GET_STATS_HISTORY_RETENTION,
@@ -42,6 +44,7 @@ SELECT '<script>D.omu = [' FROM dual;
 SELECT JSON_ARRAY(u.con_id, u.username NULL ON NULL RETURNING VARCHAR2(4000)) || ','
 FROM cdb_users u
 WHERE u.oracle_maintained = 'Y'
+  AND (:scope_schema IS NULL OR u.username = :scope_schema)
 ORDER BY u.con_id, u.username;
 SELECT '];</script>' FROM dual;
 
@@ -81,10 +84,10 @@ END;
 SELECT '<script>D.atc = [' FROM dual;
 SELECT JSON_ARRAY(
            c.con_id, c.status, c.window_group,
-           ROUND(EXTRACT(DAY FROM c.mean_job_duration) * 86400 + EXTRACT(HOUR FROM c.mean_job_duration) * 3600
-               + EXTRACT(MINUTE FROM c.mean_job_duration) * 60 + EXTRACT(SECOND FROM c.mean_job_duration), 1),
-           ROUND(EXTRACT(DAY FROM c.max_duration_last_7_days) * 86400 + EXTRACT(HOUR FROM c.max_duration_last_7_days) * 3600
-               + EXTRACT(MINUTE FROM c.max_duration_last_7_days) * 60 + EXTRACT(SECOND FROM c.max_duration_last_7_days), 1),
+           CASE WHEN :scope_schema IS NULL THEN ROUND(EXTRACT(DAY FROM c.mean_job_duration) * 86400 + EXTRACT(HOUR FROM c.mean_job_duration) * 3600
+               + EXTRACT(MINUTE FROM c.mean_job_duration) * 60 + EXTRACT(SECOND FROM c.mean_job_duration), 1) END,
+           CASE WHEN :scope_schema IS NULL THEN ROUND(EXTRACT(DAY FROM c.max_duration_last_7_days) * 86400 + EXTRACT(HOUR FROM c.max_duration_last_7_days) * 3600
+               + EXTRACT(MINUTE FROM c.max_duration_last_7_days) * 60 + EXTRACT(SECOND FROM c.max_duration_last_7_days), 1) END,
            c.attributes
            NULL ON NULL RETURNING VARCHAR2(4000)) || ','
 FROM cdb_autotask_client c

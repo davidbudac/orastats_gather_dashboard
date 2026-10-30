@@ -14,7 +14,7 @@
 -- whole database on a non-CDB.
 --
 -- Usage (all arguments optional, positional):
---   SQL> @gather_dashboard.sql [days] [max_tasks_per_run] [max_backlog] [output_file]
+--   SQL> @gather_dashboard.sql [days] [max_tasks_per_run] [max_backlog] [output_file] [schema] [table]
 --
 --   days               history to show, default 31 (stats history retention
 --                      is 31 days by default; older runs are already purged)
@@ -23,7 +23,9 @@
 --                      are always exact)
 --   max_backlog        objects still needing statistics embedded, default 5000;
 --                      also caps the columns with doubtful statistics
---   output_file        default gather_dashboard_<db>_<container>_<yyyymmdd_hh24mi>.html
+--   schema / table     optional exact unquoted names; table requires schema
+--                      use - for an omitted output_file or target
+--   output_file        default gather_dashboard_<db>_<container>_<days>days_<yyyymmdd_hh24mi>.html
 --
 
 SET TERMOUT OFF
@@ -48,7 +50,25 @@ COLUMN 1 NEW_VALUE 1
 COLUMN 2 NEW_VALUE 2
 COLUMN 3 NEW_VALUE 3
 COLUMN 4 NEW_VALUE 4
-SELECT '' "1", '' "2", '' "3", '' "4" FROM dual WHERE ROWNUM = 0;
+COLUMN 5 NEW_VALUE 5
+COLUMN 6 NEW_VALUE 6
+SELECT '' "1", '' "2", '' "3", '' "4", '' "5", '' "6" FROM dual WHERE ROWNUM = 0;
+
+-- Use '-' for an omitted target. Unquoted Oracle identifiers, case insensitive.
+VARIABLE scope_schema VARCHAR2(128)
+VARIABLE scope_table VARCHAR2(128)
+WHENEVER SQLERROR EXIT SQL.SQLCODE
+BEGIN
+    :scope_schema := UPPER(NULLIF('&5', '-'));
+    :scope_table := UPPER(NULLIF('&6', '-'));
+    IF (:scope_schema IS NOT NULL AND NOT REGEXP_LIKE(:scope_schema, '^[A-Z][A-Z0-9_$#]{0,127}$'))
+       OR (:scope_table IS NOT NULL AND NOT REGEXP_LIKE(:scope_table, '^[A-Z][A-Z0-9_$#]{0,127}$'))
+       OR (:scope_table IS NOT NULL AND :scope_schema IS NULL) THEN
+        RAISE_APPLICATION_ERROR(-20001, 'Use unquoted schema/table names; table requires schema');
+    END IF;
+END;
+/
+WHENEVER SQLERROR CONTINUE
 
 COLUMN p_days        NEW_VALUE days        NOPRINT
 COLUMN p_max_tasks   NEW_VALUE max_tasks   NOPRINT
@@ -59,9 +79,12 @@ SELECT TO_NUMBER(NVL('&1', '31'))   p_days,
        TO_NUMBER(NVL('&2', '2000')) p_max_tasks,
        TO_NUMBER(NVL('&3', '5000')) p_max_backlog,
        TO_CHAR(SYSTIMESTAMP, 'TZH:TZM') p_dbtz,
-       NVL('&4', 'gather_dashboard_'
+       NVL(NULLIF('&4', '-'), 'gather_dashboard_'
                  || LOWER(SYS_CONTEXT('USERENV', 'DB_NAME')) || '_'
                  || LOWER(REPLACE(SYS_CONTEXT('USERENV', 'CON_NAME'), '$', ''))
+                 || CASE WHEN :scope_schema IS NOT NULL THEN '_schema_' || LOWER(:scope_schema) END
+                 || CASE WHEN :scope_table IS NOT NULL THEN '_table_' || LOWER(:scope_table) END
+                 || '_' || NVL('&1', '31') || 'days'
                  || '_' || TO_CHAR(SYSDATE, 'YYYYMMDD_HH24MI') || '.html') p_out
 FROM dual;
 

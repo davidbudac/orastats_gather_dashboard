@@ -11,6 +11,7 @@
 --
 
 SELECT '<script>D.ops = [' FROM dual;
+@@_scope.sql
 SELECT REPLACE(JSON_ARRAY(
            o.con_id, o.id, o.operation, o.target,
            TO_CHAR(SYS_EXTRACT_UTC(o.start_time), '&ts_fmt'),
@@ -18,7 +19,7 @@ SELECT REPLACE(JSON_ARRAY(
            o.status, o.job_name, o.session_id,
            SUBSTR(o.notes, 1, 2500)
            NULL ON NULL RETURNING VARCHAR2(4000)), '</', '<\/') || ','
-FROM cdb_optstat_operations o
+FROM scope_ops o
 WHERE o.start_time >= &cutoff
 ORDER BY o.start_time, o.con_id, o.id;
 SELECT '];</script>' FROM dual;

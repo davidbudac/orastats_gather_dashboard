@@ -3,14 +3,15 @@
 # Run gather_dashboard.sql and write the HTML into reports/.
 #
 # Usage:
-#   ./run_gather_dashboard.sh <connect_string> [days] [max_tasks_per_run] [max_backlog]
+#   ./run_gather_dashboard.sh <connect_string> [days] [max_tasks_per_run] [max_backlog] [--pdb NAME] [--schema NAME] [--table NAME]
 #
 # Examples:
 #   ./run_gather_dashboard.sh user/pw@svc
 #   ./run_gather_dashboard.sh '/ as sysdba' 7          # OS auth, last 7 days (quote it)
 #   PDB=PDB1 ./run_gather_dashboard.sh '/ as sysdba'   # one PDB from a root connection
 #
-# PDB=<name> switches container before the run (needs SET CONTAINER).
+# PDB/SCHEMA/TABLE environment variables also select the target.
+# PDB switches container before the run (needs SET CONTAINER).
 # QUIET=1 prints only warnings and the report path (for cron).
 #
 # Plain POSIX sh, so it runs on Linux (bash, dash) and AIX (ksh): no bash
@@ -22,19 +23,58 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 case ${1:-} in
     ''|-h|--help)
-        sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '3,15p' "$0" | sed 's/^# \{0,1\}//'
         exit 1 ;;
 esac
 type sqlplus >/dev/null 2>&1 || { echo "sqlplus not found on PATH (set ORACLE_HOME and PATH, e.g. . oraenv)" >&2; exit 2; }
 
 conn=$1
-days=${2:-31}
-max_tasks=${3:-2000}
-max_backlog=${4:-5000}
+shift
+pdb=${PDB:-}
+schema=${SCHEMA:-}
+table=${TABLE:-}
+days=31
+max_tasks=2000
+max_backlog=5000
+pos=0
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --pdb|--schema|--table)
+            opt=$1
+            [ "$#" -ge 2 ] || { echo "missing value for $opt" >&2; exit 2; }
+            case $opt in
+                --pdb) pdb=$2 ;; --schema) schema=$2 ;; --table) table=$2 ;;
+            esac
+            shift 2 ;;
+        --*) echo "unknown option: $1" >&2; exit 2 ;;
+        *)
+            pos=$((pos + 1))
+            case $pos in
+                1) days=$1 ;; 2) max_tasks=$1 ;; 3) max_backlog=$1 ;;
+                *) echo "too many arguments" >&2; exit 2 ;;
+            esac
+            shift ;;
+    esac
+done
+# Simple Oracle identifiers only: keep shell and SQL*Plus substitution safe.
+for ident in "$pdb" "$schema" "$table"; do
+    case $ident in
+        '') ;;
+        [!a-zA-Z]*|*[!a-zA-Z0-9_\$\#]*)
+            echo "target names must be unquoted Oracle identifiers: $ident" >&2; exit 2 ;;
+    esac
+done
+pdb=$(printf '%s' "$pdb" | tr '[:lower:]' '[:upper:]')
+schema=$(printf '%s' "$schema" | tr '[:lower:]' '[:upper:]')
+table=$(printf '%s' "$table" | tr '[:lower:]' '[:upper:]')
+[ -z "$table" ] || [ -n "$schema" ] || { echo "--table requires --schema" >&2; exit 2; }
+for number in "$days" "$max_tasks" "$max_backlog"; do
+    case $number in ''|*[!0-9]*|0) echo "days and limits must be positive integers" >&2; exit 2 ;; esac
+done
 quiet=${QUIET:-0}
 
 mkdir -p "$SCRIPT_DIR/reports"
-out="$SCRIPT_DIR/reports/gather_dashboard_$(date +%Y%m%d_%H%M%S).html"
+out="$SCRIPT_DIR/reports/gather_dashboard_$(date +%Y%m%d_%H%M%S)_$$.html"
 # What SQL*Plus prints to the terminal (login errors), kept next to the
 # report while it runs
 sqllog="${out%.html}.log"
@@ -61,12 +101,13 @@ connected() {
 }
 
 masked=$(printf '%s\n' "$conn" | sed 's#^\([^/@ ]*\)/\([^@ ][^@ ]*\)#\1/****#')
-say "Connecting as $masked${PDB:+, container $PDB} ..."
+say "Connecting as $masked${pdb:+, container $pdb}${schema:+, schema $schema}${table:+, table $table} ..."
 start=${SECONDS:-}
 cd "$SCRIPT_DIR"
 sqlplus -S -L "$conn" > "$sqllog" 2>&1 <<SQL &
-${PDB:+ALTER SESSION SET CONTAINER = $PDB;}
-@gather_dashboard.sql $days $max_tasks $max_backlog $out
+WHENEVER SQLERROR EXIT SQL.SQLCODE
+${pdb:+ALTER SESSION SET CONTAINER = $pdb;}
+@gather_dashboard.sql $days $max_tasks $max_backlog $out ${schema:--} ${table:--}
 EXIT
 SQL
 pid=$!
@@ -83,6 +124,26 @@ if [ ! -s "$out" ]; then
     cat "$sqllog" >&2
     exit 3
 fi
+# Name the finished report from the database actually queried, not the
+# connection string (which may be a service name). Keep failed metadata
+# collections identifiable without losing the report.
+safe_name() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]_.-' '_'; }
+db=$(safe_name "$(metafield db)")
+con=$(safe_name "$(metafield con)")
+period=$(safe_name "$days")
+db=${db:-unknown}
+con=${con:-unknown}
+period=${period:-unknown}
+target="${schema:+_schema_$(safe_name "$schema")}${table:+_table_$(safe_name "$table")}"
+base="$SCRIPT_DIR/reports/gather_dashboard_${db}_${con}${target}_${period}days_$(date +%Y%m%d_%H%M%S)"
+named_out="$base.html"
+suffix=1
+while [ -e "$named_out" ]; do
+    named_out="${base}_${suffix}.html"
+    suffix=$((suffix + 1))
+done
+mv "$out" "$named_out"
+out=$named_out
 size=$(wc -c < "$out" | awk '{ s = $1; u = "bytes"
     if (s >= 1048576) { s = s / 1048576; u = "MB" } else if (s >= 1024) { s = s / 1024; u = "KB" }
     if (u == "bytes") printf "%d %s", s, u; else printf "%.1f %s", s, u }')

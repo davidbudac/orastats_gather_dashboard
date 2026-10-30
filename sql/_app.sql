@@ -97,7 +97,7 @@ DBMS_OUTPUT.PUT_LINE(q'~  const conKey = (con, s) => con + '|' + s;~');
 DBMS_OUTPUT.PUT_LINE(q'~  // Oracle-maintained schemas (SYS, SYSTEM, ...), hidden unless asked for~');
 DBMS_OUTPUT.PUT_LINE(q'~  const OMU = new Set(rows('omu').map((r) => conKey(r[0], r[1])));~');
 DBMS_OUTPUT.PUT_LINE(q'~  const isOM = (con, owner) => OMU.has(conKey(con, owner));~');
-DBMS_OUTPUT.PUT_LINE(q'~  let showOM = !!store && store.getItem('gd.om') === '1';~');
+DBMS_OUTPUT.PUT_LINE(q'~  let showOM = !!META.scopeSchema || !!store && store.getItem('gd.om') === '1';~');
 DBMS_OUTPUT.PUT_LINE(q'~  function unxml(s) {~');
 DBMS_OUTPUT.PUT_LINE(q'~    return String(s)~');
 DBMS_OUTPUT.PUT_LINE(q'~      .replace(/&quot;/g, '"').replace(/&apos;/g, "'")~');
@@ -809,8 +809,9 @@ DBMS_OUTPUT.PUT_LINE(q'~  // ---------------------------------------------------
 DBMS_OUTPUT.PUT_LINE(q'~  const ICON_THEME = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>';~');
 DBMS_OUTPUT.PUT_LINE(q'~  const app = document.getElementById('app');~');
 DBMS_OUTPUT.PUT_LINE(q'~  function scopeText() {~');
-DBMS_OUTPUT.PUT_LINE(q'~    if (META.cdb !== 'YES') return 'Whole database';~');
-DBMS_OUTPUT.PUT_LINE(q'~    return META.conId === 1 ? 'All containers' : 'Pluggable database ' + META.con;~');
+DBMS_OUTPUT.PUT_LINE(q'~    const container = META.cdb !== 'YES' ? 'Whole database' :~');
+DBMS_OUTPUT.PUT_LINE(q'~      META.conId === 1 ? 'All containers' : 'Pluggable database ' + META.con;~');
+DBMS_OUTPUT.PUT_LINE(q'~    return container + (META.scopeSchema ? ', ' + META.scopeSchema + (META.scopeTable ? '.' + META.scopeTable : '') : '');~');
 DBMS_OUTPUT.PUT_LINE(q'~  }~');
 DBMS_OUTPUT.PUT_LINE(q'~  function chrome() {~');
 DBMS_OUTPUT.PUT_LINE(q'~    const dbo = dbOffsetMin();~');
@@ -908,8 +909,11 @@ DBMS_OUTPUT.PUT_LINE(q'~    let rt;~');
 DBMS_OUTPUT.PUT_LINE(q'~    window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { renderedBase = null; keepScroll = true; route(); }, 150); });~');
 DBMS_OUTPUT.PUT_LINE(q'~  }~');
 DBMS_OUTPUT.PUT_LINE(q'~  function missingBox() {~');
-DBMS_OUTPUT.PUT_LINE(q'~    if (!missing.length) return '';~');
-DBMS_OUTPUT.PUT_LINE(q'~    return '<div class="warnbox"><b>Not collected:</b> ' + missing.map(esc).join(', ') +~');
+DBMS_OUTPUT.PUT_LINE(q'~    const scope = META.scopeSchema ? '<div class="warnbox"><b>Collection scope:</b> ' + esc(scopeText()) +~');
+DBMS_OUTPUT.PUT_LINE(q'~      '. Object counts and task totals include only this target. Operation, job and window durations and CPU describe the whole matching run. ' +~');
+DBMS_OUTPUT.PUT_LINE(q'~      'Configuration is container context. Calls without matching tasks or an explicit target are excluded.</div>' : '';~');
+DBMS_OUTPUT.PUT_LINE(q'~    if (!missing.length) return scope;~');
+DBMS_OUTPUT.PUT_LINE(q'~    return scope + '<div class="warnbox"><b>Not collected:</b> ' + missing.map(esc).join(', ') +~');
 DBMS_OUTPUT.PUT_LINE(q'~      '. Their SQL failed (missing grant, or an object this release lacks); the error text is in the HTML source next to the dataset name.</div>';~');
 DBMS_OUTPUT.PUT_LINE(q'~  }~');
 DBMS_OUTPUT.PUT_LINE(q'~  function sec(title, sub, body, end, cls) {~');
@@ -1009,13 +1013,13 @@ DBMS_OUTPUT.PUT_LINE(q'~      const empty = wins.filter((w) => !runs.some((o) =>
 DBMS_OUTPUT.PUT_LINE(q'~      if (empty.length) add('warn', esc(conName(c)) + ': ' + plural(empty.length, 'maintenance window') + ' of ' + fmtN(wins.length) + ' passed without an automatic run.', 'Last: ' + esc(empty[empty.length - 1].name) + ' at ' + fmtT(empty[empty.length - 1].start) + '.');~');
 DBMS_OUTPUT.PUT_LINE(q'~      const atEnd = runs.filter((o) => o.window && o.end && o.window.end - o.end < 120e3 && o.window.end > o.start);~');
 DBMS_OUTPUT.PUT_LINE(q'~      if (atEnd.length) add('crit', esc(conName(c)) + ': ' + plural(atEnd.length, 'run') + ' ended at the close of the maintenance window.', 'The window is too short for the work.');~');
+END;
+/
+BEGIN
 DBMS_OUTPUT.PUT_LINE(q'~    });~');
 DBMS_OUTPUT.PUT_LINE(q'~    const rec = FAILLIST.filter((x) => x.runs.size >= 2 && !x.benign && (showOM || !x.om));~');
 DBMS_OUTPUT.PUT_LINE(q'~    if (rec.length) add('warn', '<a href="#overview/failures">' + plural(rec.length, 'object') + ' failed in more than one run</a>, for example <code>' + esc(rec[0].target) + '</code> in ' + plural(rec[0].runs.size, 'run') + '.', esc(rec[0].error));~');
 DBMS_OUTPUT.PUT_LINE(q'~    const cnt = appBacklogCounts();~');
-END;
-/
-BEGIN
 DBMS_OUTPUT.PUT_LINE(q'~    if (cnt.missed || cnt.failed) {~');
 DBMS_OUTPUT.PUT_LINE(q'~      add('crit', '<a href="#backlog?cat=' + (cnt.missed ? 'missed' : 'failed') + '">' + (cnt.missed ? plural(cnt.missed, 'application object') + ' missed by the last automatic run' : '') +~');
 DBMS_OUTPUT.PUT_LINE(q'~        (cnt.missed && cnt.failed ? ', ' : '') + (cnt.failed ? plural(cnt.failed, 'object') + ' whose last gather failed' : '') + '</a>.', 'Stale now, after the job ran.');~');
@@ -1262,13 +1266,13 @@ DBMS_OUTPUT.PUT_LINE(q'~        cols: [~');
 DBMS_OUTPUT.PUT_LINE(q'~          { key: 'start', label: 'Started', cls: 't', desc: true, html: (o) => esc(fmtT(o.start, true)) },~');
 DBMS_OUTPUT.PUT_LINE(q'~          { key: 'sev', label: 'Outcome', val: (o) => SEV_RANK[o.v.sev], desc: true, html: (o) => sevBadge(o.v.sev, o.v.label, o.v.why) },~');
 DBMS_OUTPUT.PUT_LINE(q'~          { key: 'op', label: 'Operation', val: (o) => (o.members ? o.ops[0][0] : opLabel(o)),~');
+END;
+/
+BEGIN
 DBMS_OUTPUT.PUT_LINE(q'~            html: (o) => '<span class="nw">' + (o.members ? '<b>' + fmtN(o.members.length) + ' calls</b>' : esc(opLabel(o))) + (CONS.size > 1 ? ' <span class="pill">' + esc(conName(o.con)) + '</span>' : '') + '</span>' +~');
 DBMS_OUTPUT.PUT_LINE(q'~              (o.members ? ' <span class="muted">' + esc(o.ops.slice(0, 2).map((x) => x[0] + (o.ops.length > 1 ? ' \u00d7' + fmtN(x[1]) : '')).join(', ') + (o.ops.length > 2 ? ', +' + (o.ops.length - 2) + ' more' : '')) + '</span>' : '') },~');
 DBMS_OUTPUT.PUT_LINE(q'~          { key: 'target', label: 'Target', cls: 'wrap', val: (o) => (o.members ? o.owners.join(',') : opTarget(o)),~');
 DBMS_OUTPUT.PUT_LINE(q'~            html: (o) => (o.members ? (o.owners.length ? o.owners.slice(0, 3).map((x) => '<code>' + esc(x) + '</code>').join(', ') + (o.owners.length > 3 ? ' +' + (o.owners.length - 3) : '') : '') + ' <span class="muted">' + esc(plural(o.targets, 'target')) + '</span>'~');
-END;
-/
-BEGIN
 DBMS_OUTPUT.PUT_LINE(q'~              : o.kind === 'auto' ? '<span class="muted">whole database</span>' : '<code>' + (splitTarget(o.target).length >= 2 && /table_stats$/.test(o.op) ? tabLink(o.con, splitTarget(o.target).slice(0, 2).join('.'), opTarget(o)) : esc(opTarget(o))) + '</code>') + hitText(o) },~');
 DBMS_OUTPUT.PUT_LINE(q'~          { key: 'n', label: 'Objects', num: true, val: (o) => o.stats.n, html: objs },~');
 DBMS_OUTPUT.PUT_LINE(q'~          { key: 'secs', label: 'Duration', num: true, tip: 'For a group: from its first call to the end of its last', html: (o) => '<span class="durbar">' + esc(fmtDur(o.secs)) + '<span><b style="inline-size:' + Math.max(2, 100 * o.secs / dmax).toFixed(1) + '%"></b></span></span>' },~');
@@ -1515,13 +1519,13 @@ DBMS_OUTPUT.PUT_LINE(q'~    const newest = MON.map((m) => m.newest).filter(Boole
 DBMS_OUTPUT.PUT_LINE(q'~    if (!newest.length) return 'As of the last DML-monitoring flush. ';~');
 DBMS_OUTPUT.PUT_LINE(q'~    return 'As of the last DML-monitoring flush, newest counters ' + esc(fmtT(Math.max(...newest))) + '; later changes are still in memory. ';~');
 DBMS_OUTPUT.PUT_LINE(q'~  }~');
+END;
+/
+BEGIN
 DBMS_OUTPUT.PUT_LINE(q'~  function viewBacklog(q) {~');
 DBMS_OUTPUT.PUT_LINE(q'~    const v = document.getElementById('view');~');
 DBMS_OUTPUT.PUT_LINE(q'~    const f = { cat: q.get('cat') || '', con: q.get('con') || '', text: q.get('q') || '' };~');
 DBMS_OUTPUT.PUT_LINE(q'~    const consAll = [...new Set(BL.map((b) => b.con))].sort((a, b) => a - b);~');
-END;
-/
-BEGIN
 DBMS_OUTPUT.PUT_LINE(q'~    v.innerHTML = missingBox() + sec('Needs statistics now', 'Stale or without statistics, and why. ' + monText() + 'Partitions of one table with the same reason form a group.',~');
 DBMS_OUTPUT.PUT_LINE(q'~      '<div class="cats" id="cats"></div><p class="cat-text" id="cat-text"></p>' +~');
 DBMS_OUTPUT.PUT_LINE(q'~      '<div class="filters">' +~');
@@ -1768,13 +1772,13 @@ DBMS_OUTPUT.PUT_LINE(q'~          } }~');
 DBMS_OUTPUT.PUT_LINE(q'~        ]~');
 DBMS_OUTPUT.PUT_LINE(q'~      });~');
 DBMS_OUTPUT.PUT_LINE(q'~    }~');
+END;
+/
+BEGIN
 DBMS_OUTPUT.PUT_LINE(q'~    if (sel('#c-con')) sel('#c-con').onchange = () => { host._t.limit = 300; apply(); };~');
 DBMS_OUTPUT.PUT_LINE(q'~    let qt;~');
 DBMS_OUTPUT.PUT_LINE(q'~    sel('#c-q').oninput = () => { clearTimeout(qt); qt = setTimeout(apply, 180); };~');
 DBMS_OUTPUT.PUT_LINE(q'~    apply();~');
-END;
-/
-BEGIN
 DBMS_OUTPUT.PUT_LINE(q'~  }~');
 DBMS_OUTPUT.PUT_LINE(q'~  // ------------------------------------------------------------ one table~');
 DBMS_OUTPUT.PUT_LINE(q'~  // Everything the report knows about one table: its statistics now, the~');
@@ -2021,13 +2025,13 @@ DBMS_OUTPUT.PUT_LINE(q'~    if (CONS.size > 1) facts.push(['Container', esc(conN
 DBMS_OUTPUT.PUT_LINE(q'~    if (tab) {~');
 DBMS_OUTPUT.PUT_LINE(q'~      facts.push(['Partitioning', tab.ptype ? esc(tab.ptype.toLowerCase()) + (tab.subptype && tab.subptype !== 'NONE' ? ' / ' + esc(tab.subptype.toLowerCase()) : '') + ', ' + esc(plural(nparts, 'partition')) + (tab.interval ? ', interval' : '') : 'none']);~');
 DBMS_OUTPUT.PUT_LINE(q'~      facts.push(['Rows', tab.rows != null ? fmtN(tab.rows) + ' <span class="muted">(' + fmtN(tab.blocks) + ' blocks, in the statistics)</span>' : '<span class="muted">no statistics</span>']);~');
+END;
+/
+BEGIN
 DBMS_OUTPUT.PUT_LINE(q'~      facts.push(['Statistics', (tab.analyzed ? esc(fmtT(tab.analyzed)) + ' <span class="muted">(' + esc(fmtAgo(tab.analyzed)) + ')</span> ' + (tab.stale ? sevBadge('warn', 'stale') : sevBadge('good', 'fresh')) : '<span class="err">never gathered</span>') +~');
 DBMS_OUTPUT.PUT_LINE(q'~        (tab.locked ? ' <span class="pill">locked ' + esc(tab.locked.toLowerCase()) + '</span>' : '')]);~');
 DBMS_OUTPUT.PUT_LINE(q'~      if (tab.ptype) facts.push(['Partitions', esc(fmtN(nparts)) + (tab.pStale ? ', <span class="err">' + esc(fmtN(tab.pStale)) + ' stale</span>' : '') + (tab.pMissing ? ', <span class="err">' + esc(fmtN(tab.pMissing)) + ' without statistics</span>' : '') +~');
 DBMS_OUTPUT.PUT_LINE(q'~        (tab.pOldest ? '<br><span class="muted">analyzed between ' + esc(fmtT(tab.pOldest)) + ' and ' + esc(fmtT(tab.pNewest)) + '</span>' : '')]);~');
-END;
-/
-BEGIN
 DBMS_OUTPUT.PUT_LINE(q'~    } else {~');
 DBMS_OUTPUT.PUT_LINE(q'~      facts.push(['Statistics', '<span class="muted">not in this report (max_backlog reached, or the table is gone)</span>']);~');
 DBMS_OUTPUT.PUT_LINE(q'~    }~');

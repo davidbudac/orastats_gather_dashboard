@@ -53,7 +53,9 @@ SELECT '<script>D.colagg = [' FROM dual;
 WITH t AS (
     SELECT /*+ MATERIALIZE */ con_id, owner, table_name, last_analyzed, num_rows
     FROM cdb_tables
-    WHERE last_analyzed IS NOT NULL AND temporary = 'N' AND external = 'NO'
+    WHERE (:scope_schema IS NULL OR owner = :scope_schema)
+      AND (:scope_table IS NULL OR table_name = :scope_table)
+      AND last_analyzed IS NOT NULL AND temporary = 'N' AND external = 'NO'
       AND dropped = 'NO' AND table_name NOT LIKE 'BIN$%'
 ), k AS (
     SELECT /*+ MATERIALIZE */ con_id, owner, table_name, column_name, data_type, histogram,
@@ -82,7 +84,9 @@ SELECT JSON_ARRAY(
            NULL ON NULL RETURNING VARCHAR2(4000)) || ','
 FROM c
 LEFT JOIN u ON u.con_id = c.con_id AND u.username = c.owner
-WHERE c.reason IS NOT NULL
+WHERE (:scope_schema IS NULL OR c.owner = :scope_schema)
+  AND (:scope_table IS NULL OR c.table_name = :scope_table)
+  AND c.reason IS NOT NULL
 GROUP BY c.con_id, NVL(u.oracle_maintained, 'N'), c.reason
 ORDER BY c.con_id, NVL(u.oracle_maintained, 'N'), c.reason;
 SELECT '];</script>' FROM dual;
@@ -91,7 +95,9 @@ SELECT '<script>D.cols = [' FROM dual;
 WITH t AS (
     SELECT /*+ MATERIALIZE */ con_id, owner, table_name, last_analyzed, num_rows
     FROM cdb_tables
-    WHERE last_analyzed IS NOT NULL AND temporary = 'N' AND external = 'NO'
+    WHERE (:scope_schema IS NULL OR owner = :scope_schema)
+      AND (:scope_table IS NULL OR table_name = :scope_table)
+      AND last_analyzed IS NOT NULL AND temporary = 'N' AND external = 'NO'
       AND dropped = 'NO' AND table_name NOT LIKE 'BIN$%'
 ), k AS (
     SELECT /*+ MATERIALIZE */ con_id, owner, table_name, column_name, data_type, histogram,
@@ -123,7 +129,9 @@ SELECT REPLACE(JSON_ARRAY(
            NULL ON NULL RETURNING VARCHAR2(4000)), '</', '<\/') || ','
 FROM c
 LEFT JOIN u ON u.con_id = c.con_id AND u.username = c.owner
-WHERE c.reason IS NOT NULL
+WHERE (:scope_schema IS NULL OR c.owner = :scope_schema)
+  AND (:scope_table IS NULL OR c.table_name = :scope_table)
+  AND c.reason IS NOT NULL
 ORDER BY CASE WHEN NVL(u.oracle_maintained, 'N') = 'Y' THEN 1 ELSE 0 END,
          c.con_id, c.owner, c.table_name, c.column_name
 FETCH FIRST &max_backlog ROWS ONLY;
@@ -137,6 +145,8 @@ SELECT JSON_ARRAY(
            NULL ON NULL RETURNING VARCHAR2(4000)) || ','
 FROM (SELECT con_id, COUNT(*) n, MAX(timestamp) newest
       FROM cdb_tab_modifications
+      WHERE (:scope_schema IS NULL OR table_owner = :scope_schema)
+        AND (:scope_table IS NULL OR table_name = :scope_table)
       GROUP BY con_id) m
 ORDER BY m.con_id;
 SELECT '];</script>' FROM dual;
@@ -146,7 +156,9 @@ WITH s AS (
     SELECT /*+ MATERIALIZE */ con_id, owner, table_name, partition_name, subpartition_name,
            object_type, num_rows, last_analyzed
     FROM cdb_tab_statistics
-    WHERE stale_stats = 'NO' AND num_rows > 0 AND table_name NOT LIKE 'BIN$%'
+    WHERE (:scope_schema IS NULL OR owner = :scope_schema)
+      AND (:scope_table IS NULL OR table_name = :scope_table)
+      AND stale_stats = 'NO' AND num_rows > 0 AND table_name NOT LIKE 'BIN$%'
 ), m AS (
     SELECT /*+ MATERIALIZE */ con_id, table_owner, table_name, partition_name, subpartition_name,
            inserts, updates, deletes, timestamp

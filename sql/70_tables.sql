@@ -28,14 +28,15 @@
 --
 
 SELECT '<script>D.tabs = [' FROM dual;
-WITH g AS (
+@@_scope.sql
+, g AS (
     SELECT /*+ MATERIALIZE */ DISTINCT t.con_id,
            REGEXP_SUBSTR(t.target, '"([^"]+)"', 1, 1, NULL, 1) owner,
            REGEXP_SUBSTR(t.target, '"([^"]+)"', 1, 2, NULL, 1) table_name
-    FROM cdb_optstat_operation_tasks t
+    FROM scope_tasks t
     WHERE t.target_type LIKE 'TABLE%'
       AND (t.con_id, t.opid) IN (
-          SELECT o.con_id, o.id FROM cdb_optstat_operations o WHERE o.start_time >= &cutoff)
+          SELECT o.con_id, o.id FROM scope_ops o WHERE o.start_time >= &cutoff)
 ), pr AS (
     SELECT /*+ MATERIALIZE */ DISTINCT con_id, owner, table_name FROM cdb_tab_stat_prefs
 ), p AS (
@@ -61,6 +62,9 @@ WITH g AS (
     SELECT con_id, owner, table_name FROM pr
     UNION
     SELECT con_id, owner, table_name FROM p
+    UNION
+    SELECT con_id, owner, table_name FROM s
+    WHERE :scope_table IS NOT NULL AND owner = :scope_schema AND table_name = :scope_table
 )
 SELECT REPLACE(JSON_ARRAY(
            a.con_id, a.owner, a.table_name, p.partitioning_type, p.subpartitioning_type,
@@ -77,21 +81,24 @@ LEFT JOIN p  ON p.con_id = a.con_id AND p.owner = a.owner AND p.table_name = a.t
 LEFT JOIN s  ON s.con_id = a.con_id AND s.owner = a.owner AND s.table_name = a.table_name
 LEFT JOIN ps ON ps.con_id = a.con_id AND ps.owner = a.owner AND ps.table_name = a.table_name
 LEFT JOIN u  ON u.con_id = a.con_id AND u.username = a.owner
-WHERE a.table_name NOT LIKE 'BIN$%'
+WHERE (:scope_schema IS NULL OR a.owner = :scope_schema)
+  AND (:scope_table IS NULL OR a.table_name = :scope_table)
+  AND a.table_name NOT LIKE 'BIN$%'
 ORDER BY CASE WHEN NVL(u.oracle_maintained, 'N') = 'Y' THEN 1 ELSE 0 END,
          a.con_id, a.owner, a.table_name
 FETCH FIRST &max_backlog ROWS ONLY;
 SELECT '];</script>' FROM dual;
 
 SELECT '<script>D.idx = [' FROM dual;
-WITH g AS (
+@@_scope.sql
+, g AS (
     SELECT /*+ MATERIALIZE */ DISTINCT t.con_id,
            REGEXP_SUBSTR(t.target, '"([^"]+)"', 1, 1, NULL, 1) owner,
            REGEXP_SUBSTR(t.target, '"([^"]+)"', 1, 2, NULL, 1) index_name
-    FROM cdb_optstat_operation_tasks t
+    FROM scope_tasks t
     WHERE t.target_type LIKE 'INDEX%'
       AND (t.con_id, t.opid) IN (
-          SELECT o.con_id, o.id FROM cdb_optstat_operations o WHERE o.start_time >= &cutoff)
+          SELECT o.con_id, o.id FROM scope_ops o WHERE o.start_time >= &cutoff)
 ), i AS (
     SELECT /*+ MATERIALIZE */ con_id, owner, index_name, table_owner, table_name FROM cdb_indexes
 ), u AS (
@@ -103,6 +110,8 @@ SELECT REPLACE(JSON_ARRAY(
 FROM g
 JOIN i ON i.con_id = g.con_id AND i.owner = g.owner AND i.index_name = g.index_name
 LEFT JOIN u ON u.con_id = g.con_id AND u.username = g.owner
+WHERE (:scope_schema IS NULL OR i.table_owner = :scope_schema)
+  AND (:scope_table IS NULL OR i.table_name = :scope_table)
 ORDER BY CASE WHEN NVL(u.oracle_maintained, 'N') = 'Y' THEN 1 ELSE 0 END,
          g.con_id, g.owner, g.index_name
 FETCH FIRST 20000 ROWS ONLY;
@@ -126,5 +135,7 @@ SELECT REPLACE(JSON_ARRAY(
            NULL ON NULL RETURNING VARCHAR2(4000)), '</', '<\/') || ','
 FROM syn
 JOIN o ON o.con_id = syn.con_id AND o.object_id = syn.bo#
+WHERE (:scope_schema IS NULL OR o.owner = :scope_schema)
+  AND (:scope_table IS NULL OR o.object_name = :scope_table)
 ORDER BY syn.con_id, o.owner, o.object_name;
 SELECT '];</script>' FROM dual;

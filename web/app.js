@@ -95,7 +95,7 @@
   // Oracle-maintained schemas (SYS, SYSTEM, ...), hidden unless asked for
   const OMU = new Set(rows('omu').map((r) => conKey(r[0], r[1])));
   const isOM = (con, owner) => OMU.has(conKey(con, owner));
-  let showOM = !!store && store.getItem('gd.om') === '1';
+  let showOM = !!META.scopeSchema || !!store && store.getItem('gd.om') === '1';
 
   function unxml(s) {
     return String(s)
@@ -826,8 +826,9 @@
   const ICON_THEME = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z"/></svg>';
   const app = document.getElementById('app');
   function scopeText() {
-    if (META.cdb !== 'YES') return 'Whole database';
-    return META.conId === 1 ? 'All containers' : 'Pluggable database ' + META.con;
+    const container = META.cdb !== 'YES' ? 'Whole database' :
+      META.conId === 1 ? 'All containers' : 'Pluggable database ' + META.con;
+    return container + (META.scopeSchema ? ', ' + META.scopeSchema + (META.scopeTable ? '.' + META.scopeTable : '') : '');
   }
   function chrome() {
     const dbo = dbOffsetMin();
@@ -928,8 +929,11 @@
   }
 
   function missingBox() {
-    if (!missing.length) return '';
-    return '<div class="warnbox"><b>Not collected:</b> ' + missing.map(esc).join(', ') +
+    const scope = META.scopeSchema ? '<div class="warnbox"><b>Collection scope:</b> ' + esc(scopeText()) +
+      '. Object counts and task totals include only this target. Operation, job and window durations and CPU describe the whole matching run. ' +
+      'Configuration is container context. Calls without matching tasks or an explicit target are excluded.</div>' : '';
+    if (!missing.length) return scope;
+    return scope + '<div class="warnbox"><b>Not collected:</b> ' + missing.map(esc).join(', ') +
       '. Their SQL failed (missing grant, or an object this release lacks); the error text is in the HTML source next to the dataset name.</div>';
   }
   function sec(title, sub, body, end, cls) {

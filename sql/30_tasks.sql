@@ -13,6 +13,7 @@
 --
 
 SELECT '<script>D.tagg = [' FROM dual;
+@@_scope.sql
 SELECT JSON_ARRAY(
            con_id, opid, target_type, status, COUNT(*), SUM(target_size),
            ROUND(SUM(secs), 3),
@@ -28,15 +29,16 @@ FROM (
              + EXTRACT(HOUR FROM (t.end_time - t.start_time)) * 3600
              + EXTRACT(MINUTE FROM (t.end_time - t.start_time)) * 60
              + EXTRACT(SECOND FROM (t.end_time - t.start_time)) AS secs
-    FROM cdb_optstat_operation_tasks t
+    FROM scope_tasks t
     WHERE (t.con_id, t.opid) IN (
-        SELECT o.con_id, o.id FROM cdb_optstat_operations o WHERE o.start_time >= &cutoff)
+        SELECT o.con_id, o.id FROM scope_ops o WHERE o.start_time >= &cutoff)
 )
 GROUP BY con_id, opid, target_type, status
 ORDER BY con_id, opid, target_type, status;
 SELECT '];</script>' FROM dual;
 
 SELECT '<script>D.tasks = [' FROM dual;
+@@_scope.sql
 SELECT REPLACE(JSON_ARRAY(
            con_id, opid, target, target_objn, target_type, target_size,
            TO_CHAR(SYS_EXTRACT_UTC(start_time), '&ts_fmt'),
@@ -51,9 +53,9 @@ FROM (
                ORDER BY CASE WHEN t.status = 'COMPLETED' THEN 1 ELSE 0 END,
                         t.end_time - t.start_time DESC NULLS LAST,
                         t.start_time) AS rn
-    FROM cdb_optstat_operation_tasks t
+    FROM scope_tasks t
     WHERE (t.con_id, t.opid) IN (
-        SELECT o.con_id, o.id FROM cdb_optstat_operations o WHERE o.start_time >= &cutoff)
+        SELECT o.con_id, o.id FROM scope_ops o WHERE o.start_time >= &cutoff)
 )
 WHERE rn <= &max_tasks
 ORDER BY con_id, opid, start_time NULLS LAST;
