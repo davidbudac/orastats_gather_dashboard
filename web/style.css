@@ -191,8 +191,8 @@ input[type="checkbox"] { accent-color: var(--accent); inline-size: 1rem; block-s
 @media (hover: hover) and (pointer: fine) {
   .tabs a:hover { background: var(--raised); color: var(--ink); text-decoration: none; }
 }
-.prefs { display: flex; gap: 0.5rem; align-items: center; }
-.prefs label { color: var(--muted); font-size: var(--step--1); display: inline-flex; gap: 0.4rem; align-items: center; }
+.top .prefs { display: flex; gap: 0.5rem; align-items: center; }
+.top .prefs label { color: var(--muted); font-size: var(--step--1); display: inline-flex; gap: 0.4rem; align-items: center; }
 .icon-btn { inline-size: 2.1rem; block-size: 2.1rem; padding: 0; display: inline-grid; place-items: center; position: relative; }
 .icon-btn::after { content: ""; position: absolute; inset: min(0px, (100% - 44px) / 2); }
 .icon-btn svg { inline-size: 1.05rem; block-size: 1.05rem; fill: currentColor; }
@@ -681,7 +681,7 @@ footer.foot {
 }
 
 @media print {
-  .tabs, .prefs, .filters, .seg { display: none; }
+  .tabs, .top .prefs, .filters, .seg { display: none; }
   .top { position: static; backdrop-filter: none; }
 }
 

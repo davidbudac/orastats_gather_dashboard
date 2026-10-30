@@ -5,7 +5,8 @@
 -- Writes one self-contained HTML file: an overview of every DBMS_STATS
 -- gather operation (the automatic job and manual/custom gathers), a
 -- drill-down per run (each object it touched, how long it took, what
--- failed), and the objects that still need statistics now.
+-- failed), the objects that still need statistics now, and column
+-- statistics and histograms that cannot be trusted.
 --
 -- Read-only: every statement is a SELECT (plus PL/SQL that only prints).
 -- Uses the CDB_* views, so it covers every open container when run in
@@ -20,7 +21,8 @@
 --   max_tasks_per_run  per-object rows embedded per run, default 2000
 --                      (failed first, then slowest; the per-run totals
 --                      are always exact)
---   max_backlog        objects still needing statistics embedded, default 5000
+--   max_backlog        objects still needing statistics embedded, default 5000;
+--                      also caps the columns with doubtful statistics
 --   output_file        default gather_dashboard_<db>_<container>_<yyyymmdd_hh24mi>.html
 --
 
@@ -77,6 +79,7 @@ SPOOL &out_file
 @@sql/30_tasks.sql
 @@sql/40_jobs_windows.sql
 @@sql/50_backlog.sql
+@@sql/60_columns.sql
 @@sql/90_app.sql
 
 SPOOL OFF

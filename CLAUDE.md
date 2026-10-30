@@ -19,6 +19,7 @@ sql/20_operations.sql   D.ops   (CDB_OPTSTAT_OPERATIONS)
 sql/30_tasks.sql        D.tagg (exact totals), D.tasks (capped per run)
 sql/40_jobs_windows.sql D.ajh, D.sjr, D.win
 sql/50_backlog.sql      D.blagg (exact counts), D.bl (capped), D.tprefs
+sql/60_columns.sql      D.colagg (exact), D.cols (capped), D.mon, D.near (capped)
 sql/90_app.sql          @@_app.sql, </body>
 sql/_css.sql, _app.sql  GENERATED from web/style.css, web/app.js
 web/app.js, style.css   page source (no libraries)
@@ -32,6 +33,9 @@ elastic/                Elastic Stack export: export.sh + export_gather.sql (NDJ
 ```
 
 ## Rules that break a run if ignored
+
+- Joins between big `CDB_` views run per row across containers (minutes, TEMP).
+  Read each view once in a `/*+ MATERIALIZE */` WITH clause, then join those.
 
 - Each dataset is printed as `<script>D.x = [` rows `];</script>`, one JSON_ARRAY
   per row with a trailing comma. Always `NULL ON NULL` (the default ABSENT ON NULL

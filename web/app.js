@@ -2,8 +2,9 @@
  * Statistics gathering dashboard -- page script.
  *
  * Source of sql/_app.sql (tools/build_assets.sh).  Reads the D.* datasets
- * that the SQL sections printed above it and renders four views:
- * overview, runs, one run in detail, and what still needs statistics.
+ * that the SQL sections printed above it and renders the views:
+ * overview, runs, one run in detail, what still needs statistics,
+ * column statistics, and setup.
  * No libraries, no network: the report must work from file:// offline.
  */
 (function () {
@@ -375,6 +376,42 @@
   const BLAGG = rows('blagg').map((r) => ({ con: r[0], om: r[1] === 'Y', type: r[2], stale: r[3] === 'Y', missing: r[4] === 'Y', locked: r[5] === 'Y', n: r[6] }));
   const blTruncated = BL.length >= (META.maxBacklog || 5000);
 
+  // Column statistics below the table level (sql/60_columns.sql)
+  const COLCATS = {
+    nostats: { sev: 'warn', title: 'Column without statistics', text: 'The table has statistics but this column has none, typically because it was added after the last gather. The optimizer guesses its selectivity.' },
+    older: { sev: 'warn', title: 'Older than the table statistics', text: 'Over an hour older than the table statistics: the last gather left this column out (a METHOD_OPT naming only some columns, or FOR TABLE). Its distinct values, nulls and histogram describe older data.' },
+    legacyhb: { sev: 'warn', title: 'Height-balanced histogram', text: 'Only built with a fixed ESTIMATE_PERCENT. With AUTO_SAMPLE_SIZE, 19c builds frequency, top-frequency or hybrid histograms instead, which estimate popular values much better.' },
+    small: { sev: 'info', title: 'Histogram with few buckets', text: 'Fewer than half the buckets it could have (254, or one per distinct value): METHOD_OPT asked for a small SIZE. Values between two endpoints get an average estimate.' },
+    freqgap: { sev: 'info', title: 'Frequency histogram missing values', text: 'Fewer buckets than distinct values: some values were not in the sample, or long strings that start alike share one endpoint. Values missing from it get a guessed estimate.' }
+  };
+  const COLCAT_ORDER = ['nostats', 'older', 'legacyhb', 'small', 'freqgap'];
+  const COLCAT_SHORT = { nostats: 'without statistics', older: 'older than their table', legacyhb: 'with a height-balanced histogram', small: 'with a small histogram', freqgap: 'with gaps in a frequency histogram' };
+  const COLS = rows('cols').map((r) => {
+    const c = {
+      con: r[0], owner: r[1], table: r[2], col: r[3], dtype: r[4], cat: r[5], hist: r[6], ndv: r[7], buckets: r[8],
+      nulls: r[9], sample: r[10], analyzed: ts(r[11]), tabAnalyzed: ts(r[12]), rows: r[13], om: r[14] === 'Y'
+    };
+    c.name = c.owner + '.' + c.table;
+    c.full = c.name + '.' + c.col;
+    c.prefs = TPREFMAP.get(conKey(c.con, c.name)) || [];
+    return c;
+  }).filter((c) => COLCATS[c.cat]);
+  const COLAGG = rows('colagg').map((r) => ({ con: r[0], om: r[1] === 'Y', cat: r[2], n: r[3], tables: r[4] }));
+  const colTruncated = COLS.length >= (META.maxBacklog || 5000);
+  // DML monitoring: what the flushed counters cover, and what is about to go stale
+  const MON = rows('mon').map((r) => ({ con: r[0], n: r[1], newest: ts(r[2]), level: r[3] }));
+  const NEAR = rows('near').map((r) => {
+    const b = {
+      con: r[0], owner: r[1], table: r[2], part: r[3], sub: r[4], type: r[5] || '', rows: r[6], analyzed: ts(r[7]),
+      ins: r[8] || 0, upd: r[9] || 0, del: r[10] || 0, dmlTs: ts(r[11]), th: r[12], om: r[13] === 'Y'
+    };
+    b.name = [b.owner, b.table, b.part, b.sub].filter(Boolean).join('.');
+    b.dml = b.ins + b.upd + b.del;
+    b.pct = b.rows ? (100 * b.dml) / b.rows : null;
+    b.share = b.pct != null && b.th ? b.pct / b.th : null;
+    return b;
+  });
+
   function sevBadge(sev, label, tip) {
     return '<span class="sev ' + sev + '"' + (tip ? ' data-tip="' + esc(tip) + '"' : '') + '><i>' + SEV_ICON[sev] + '</i>' + esc(label) + '</span>';
   }
@@ -738,7 +775,7 @@
       '<header class="top"><div class="ident"><span class="db">' + esc(META.db || '?') + '</span>' +
       '<span class="scope">' + esc(scopeText()) + ', last ' + DAYS + ' days</span></div>' +
       '<nav class="tabs" aria-label="Views"><a href="#overview" data-v="overview">Overview</a><a href="#runs" data-v="runs">Runs</a>' +
-      '<a href="#backlog" data-v="backlog">Needs statistics</a><a href="#config" data-v="config">Setup</a></nav>' +
+      '<a href="#backlog" data-v="backlog">Needs statistics</a><a href="#columns" data-v="columns">Columns</a><a href="#config" data-v="config">Setup</a></nav>' +
       '<div class="prefs"><label data-tip="Include gathers, failures and stale objects in Oracle-maintained schemas (SYS, SYSTEM, AUDSYS, ...). Automatic runs always show."><input type="checkbox" id="om"> Oracle schemas</label>' +
       '<label>Times <select id="tz">' +
       '<option value="db">DB host (' + offLabel(dbo) + ')</option><option value="utc">UTC</option><option value="local">This browser (' + offLabel(-new Date().getTimezoneOffset()) + ')</option>' +
@@ -934,6 +971,23 @@
     if (cnt.missed || cnt.failed) {
       add('crit', '<a href="#backlog?cat=' + (cnt.missed ? 'missed' : 'failed') + '">' + (cnt.missed ? plural(cnt.missed, 'application object') + ' missed by the last automatic run' : '') +
         (cnt.missed && cnt.failed ? ', ' : '') + (cnt.failed ? plural(cnt.failed, 'object') + ' whose last gather failed' : '') + '</a>.', 'They are stale now, and the job had its chance.');
+    }
+    const basic = MON.filter((m) => /^BASIC$/i.test(m.level || ''));
+    if (basic.length) add('crit', 'STATISTICS_LEVEL is <b>BASIC</b> in ' + esc(META.con) + ': DML monitoring is off.', 'Nothing is counted in DBA_TAB_MODIFICATIONS, so no table ever turns stale and the automatic job regathers nothing.');
+    const colCnt = {};
+    COLAGG.filter((a) => showOM || !a.om).forEach((a) => { colCnt[a.cat] = (colCnt[a.cat] || 0) + a.n; });
+    const colCats = COLCAT_ORDER.filter((c) => colCnt[c]);
+    if (colCats.length) {
+      const n = colCats.reduce((a, c) => a + colCnt[c], 0);
+      add(colCats.some((c) => COLCATS[c].sev === 'warn') ? 'warn' : 'info',
+        '<a href="#columns">' + plural(n, 'column') + (showOM ? '' : ' in application schemas') + '</a> with doubtful statistics: ' +
+        colCats.map((c) => '<a href="#columns?cat=' + c + '">' + fmtN(colCnt[c]) + ' ' + COLCAT_SHORT[c] + '</a>').join(', ') + '.',
+        'The table statistics look fine; these columns do not. See the Columns view.');
+    }
+    const near = NEAR.filter((b) => showOM || !b.om);
+    if (near.length) {
+      add('info', '<a href="#backlog">' + plural(near.length, 'table or partition', 'tables and partitions') + '</a> ' + (near.length === 1 ? 'is' : 'are') + ' at least halfway to stale' + (showOM ? '' : ' in application schemas') + '.',
+        'Counted from the flushed DML counters only; changes still in memory may already have pushed some over.' + (near.length >= 2000 ? ' The report holds the first 2,000.' : ''));
     }
     const gs = GATHERS.filter((o) => showOM || !o.om);
     const mf = gs.filter((o) => o.v.sev === 'crit');
@@ -1348,11 +1402,11 @@
     return 'exec dbms_stats.gather_table_stats(' + args.join(', ') + ')';
   }
   // Statements for several objects, with the container switch they need
-  function fixScript(list) {
+  function fixScript(list, cmd) {
     const byCon = new Map();
     list.forEach((b) => {
       if (!byCon.has(b.con)) byCon.set(b.con, new Set());
-      byCon.get(b.con).add(fixCmd(b));
+      byCon.get(b.con).add((cmd || fixCmd)(b));
     });
     const out = [];
     byCon.forEach((cmds, con) => {
@@ -1397,11 +1451,17 @@
     });
     return out;
   }
+  // When the DML-monitoring counters were last written, for the staleness caveat
+  function monText() {
+    const newest = MON.map((m) => m.newest).filter(Boolean);
+    if (!newest.length) return 'Staleness is as of the last DML-monitoring flush. ';
+    return 'Staleness is as of the last DML-monitoring flush; the newest counters are from ' + esc(fmtT(Math.max(...newest))) + '. Changes since then are still in memory and not counted yet. ';
+  }
   function viewBacklog(q) {
     const v = document.getElementById('view');
     const f = { cat: q.get('cat') || '', con: q.get('con') || '', text: q.get('q') || '' };
     const consAll = [...new Set(BL.map((b) => b.con))].sort((a, b) => a - b);
-    v.innerHTML = missingBox() + sec('Needs statistics now', 'Tables, partitions and subpartitions that are stale or have no statistics, and why. Staleness is as of the last DML-monitoring flush. ' +
+    v.innerHTML = missingBox() + sec('Needs statistics now', 'Tables, partitions and subpartitions that are stale or have no statistics, and why. ' + monText() +
       'Partitions of one table with the same reason are grouped.',
       '<div class="cats" id="cats"></div><p class="cat-text" id="cat-text"></p>' +
       '<div class="filters">' +
@@ -1410,7 +1470,9 @@
       '<button type="button" id="b-copy" class="copy-all">Copy gather statements</button>' +
       '<span class="count" id="b-n"></span></div>' +
       (blTruncated ? '<p class="note" style="margin-block-end:1rem">Only the first ' + fmtN(BL.length) + ' objects are in this report (application schemas first). Raise max_backlog to see all.</p>' : '') +
-      '<div id="t-bl"></div>');
+      '<div id="t-bl"></div>') +
+      sec('Close to stale', 'Not stale yet, but the flushed counters alone show at least half of STALE_PERCENT changed. Unflushed changes may already have pushed them over; the next automatic run will tell.',
+        '<div id="t-near"></div>');
     const sel = (id) => v.querySelector(id);
     if (sel('#b-con')) sel('#b-con').value = f.con;
     sel('#b-q').value = f.text;
@@ -1482,10 +1544,179 @@
           } }
         ]
       });
+      applyNear();
+    }
+    const nearHost = sel('#t-near');
+    // Partitions of one table: one row that opens up (three or more)
+    function groupNear(list) {
+      const by = new Map();
+      list.forEach((b) => {
+        if (!b.part && !b.sub) return;
+        const k = b.con + '|' + b.owner + '.' + b.table + '|' + b.type;
+        if (!by.has(k)) by.set(k, []);
+        by.get(k).push(b);
+      });
+      const done = new Set();
+      const out = [];
+      list.forEach((b) => {
+        const k = b.con + '|' + b.owner + '.' + b.table + '|' + b.type;
+        const m = (b.part || b.sub) ? by.get(k) : null;
+        if (!m || m.length < 3) { out.push(b); return; }
+        if (done.has(k)) return;
+        done.add(k);
+        const sum = (fld) => m.reduce((a, x) => a + (x[fld] || 0), 0);
+        const g = {
+          group: true, key: k, members: m, con: b.con, owner: b.owner, table: b.table, type: b.type, om: b.om, name: b.owner + '.' + b.table,
+          rows: sum('rows'), ins: sum('ins'), upd: sum('upd'), del: sum('del'), dml: sum('dml'), th: b.th,
+          share: Math.max(...m.map((x) => x.share || 0)), analyzed: Math.min(...m.map((x) => x.analyzed || 9e15)), dmlTs: Math.max(...m.map((x) => x.dmlTs || 0)) || null
+        };
+        g.pct = g.rows ? (100 * g.dml) / g.rows : null;
+        out.push(g);
+      });
+      return out;
+    }
+    function applyNear() {
+      const list = NEAR.filter((b) => (showOM || !b.om) && (!f.con || String(b.con) === f.con) && (!f.text || b.name.toLowerCase().includes(f.text)));
+      renderTable(nearHost, {
+        rows: groupNear(list), sort: ['share', -1], limit: 50,
+        kids: (r) => (r.group ? r.members : null), rowKey: (r) => r.key,
+        empty: missing.includes('near') ? 'Not collected.' : 'Nothing is close to its stale threshold with these filters.',
+        cols: [
+          { key: 'name', label: 'Object', cls: 'wrap', html: (b) => '<code>' + esc(b.name) + '</code>' +
+            (b.group ? ' <span class="pill">' + esc(plural(b.members.length, b.type.toLowerCase())) + '</span>' : b.type && b.type !== 'TABLE' ? ' <span class="pill">' + esc(b.type.toLowerCase()) + '</span>' : '') +
+            (consAll.length > 1 || CONS.size > 1 ? ' <span class="pill">' + esc(conName(b.con)) + '</span>' : '') },
+          { key: 'rows', label: 'Rows', num: true, tip: 'NUM_ROWS in the current statistics', html: (b) => fmtN(b.rows) },
+          { key: 'share', label: 'Changed', num: true, tip: 'Inserts + updates + deletes in the flushed counters, against the row count. A full bar is STALE_PERCENT; for a group, the partition closest to it.',
+            html: (b) => '<span class="pctcell" data-tip="' + esc('Inserts ' + fmtN(b.ins) + '<br>Updates ' + fmtN(b.upd) + '<br>Deletes ' + fmtN(b.del) + '<br>' + b.pct.toFixed(1) + '% changed; stale from ' + b.th + '%' +
+              (b.group ? '<br>Closest partition: ' + (100 * b.share).toFixed(0) + '% of the way' : '')) + '">' +
+              fmtN(b.dml) + ' <span class="muted">(' + b.pct.toFixed(1) + '%)</span><span class="pctbar" aria-hidden="true"><b style="inline-size:' + Math.min(100, 100 * b.share).toFixed(1) + '%"></b></span></span>' },
+          { key: 'th', label: 'Stale at', num: true, tip: 'STALE_PERCENT: the table preference, else the global one', html: (b) => esc(b.th) + '%' },
+          { key: 'analyzed', label: 'Analyzed', cls: 't', html: (b) => esc(fmtT(b.analyzed)) },
+          { key: 'dmlTs', label: 'Last DML', cls: 't', tip: 'Time of the DML-monitoring row', html: (b) => esc(fmtT(b.dmlTs)) }
+        ]
+      });
     }
     if (sel('#b-con')) sel('#b-con').onchange = () => { host._t.limit = 300; apply(); };
     let qt;
     sel('#b-q').oninput = () => { clearTimeout(qt); qt = setTimeout(apply, 180); };
+    apply();
+  }
+
+  // ------------------------------------------------------------ columns
+  // A default gather fixes most of these; a height-balanced histogram also
+  // needs AUTO_SAMPLE_SIZE in case a fixed ESTIMATE_PERCENT is what built it.
+  function colFixCmd(c) {
+    const args = ['ownname => ' + sqlq(c.owner), 'tabname => ' + sqlq(c.table)];
+    if (c.cat === 'legacyhb') args.push('estimate_percent => dbms_stats.auto_sample_size');
+    return 'exec dbms_stats.gather_table_stats(' + args.join(', ') + ')';
+  }
+  // Columns of one table with the same reason: one row that opens up
+  function groupCols(list) {
+    const by = new Map();
+    list.forEach((c) => {
+      const k = c.con + '|' + c.name + '|' + c.cat;
+      if (!by.has(k)) by.set(k, []);
+      by.get(k).push(c);
+    });
+    const done = new Set();
+    const out = [];
+    list.forEach((c) => {
+      const k = c.con + '|' + c.name + '|' + c.cat;
+      const m = by.get(k);
+      if (m.length < 2) { out.push(c); return; }
+      if (done.has(k)) return;
+      done.add(k);
+      const an = m.map((x) => x.analyzed).filter(Boolean);
+      out.push({
+        group: true, key: k, members: m, con: c.con, owner: c.owner, table: c.table, name: c.name, full: c.name, cat: c.cat, om: c.om,
+        prefs: c.prefs, tabAnalyzed: c.tabAnalyzed, rows: c.rows, analyzed: an.length === m.length ? Math.min(...an) : null
+      });
+    });
+    return out;
+  }
+  function viewColumns(q) {
+    const v = document.getElementById('view');
+    const f = { cat: q.get('cat') || '', con: q.get('con') || '', text: q.get('q') || '' };
+    const consAll = [...new Set(COLS.map((c) => c.con))].sort((a, b) => a - b);
+    const om = COLAGG.filter((a) => a.om).reduce((a, x) => a + x.n, 0);
+    v.innerHTML = missingBox() + sec('Column statistics', 'Columns of analyzed tables whose own statistics lag behind or whose histogram cannot describe them. ' +
+      'Table-level column statistics only; tables without any statistics are under Needs statistics. Columns of one table with the same reason are grouped.',
+      '<div class="cats" id="cats"></div><p class="cat-text" id="cat-text"></p>' +
+      '<div class="filters">' +
+      (consAll.length > 1 ? '<label>Container <select id="c-con"><option value="">All</option>' + consAll.map((c) => '<option value="' + c + '">' + esc(conName(c)) + '</option>').join('') + '</select></label>' : '') +
+      '<input type="search" id="c-q" placeholder="Filter by owner, table or column" aria-label="Filter columns">' +
+      '<button type="button" id="c-copy" class="copy-all">Copy gather statements</button>' +
+      '<span class="count" id="c-n"></span></div>' +
+      (colTruncated ? '<p class="note" style="margin-block-end:1rem">Only the first ' + fmtN(COLS.length) + ' columns are in this report (application schemas first); ' +
+        fmtN(COLAGG.reduce((a, x) => a + x.n, 0)) + ' in all' + (om ? ', ' + fmtN(om) + ' of them in Oracle schemas' : '') + '. Raise max_backlog to see all.</p>' : '') +
+      '<div id="t-cols"></div>');
+    const sel = (id) => v.querySelector(id);
+    if (sel('#c-con')) sel('#c-con').value = f.con;
+    sel('#c-q').value = f.text;
+    const host = sel('#t-cols');
+    host._t = { sort: parseSort(q.get('s'), null), limit: 300 };
+    function apply() {
+      f.con = sel('#c-con') ? sel('#c-con').value : '';
+      f.text = sel('#c-q').value.trim().toLowerCase();
+      const params = new URLSearchParams();
+      if (f.cat) params.set('cat', f.cat);
+      if (f.con) params.set('con', f.con);
+      if (f.text) params.set('q', f.text);
+      if (host._t.sort) params.set('s', sortParam(host._t.sort));
+      setBaseHash('#columns' + (params.toString() ? '?' + params.toString() : ''));
+      const scoped = COLS.filter((c) => (!f.con || String(c.con) === f.con) && (!f.text || c.full.toLowerCase().includes(f.text)));
+      const base = scoped.filter((c) => showOM || !c.om);
+      const cnt = {};
+      base.forEach((c) => { cnt[c.cat] = (cnt[c.cat] || 0) + 1; });
+      const cats = COLCAT_ORDER.filter((c) => cnt[c] || f.cat === c);
+      sel('#cats').innerHTML = cats.length ? '<button type="button" class="cat" data-cat="" aria-pressed="' + !f.cat + '">All<span class="n">' + fmtN(base.length) + '</span></button>' +
+        cats.map((c) => '<button type="button" class="cat" data-cat="' + c + '" aria-pressed="' + (f.cat === c) + '">' + sevBadge(COLCATS[c].sev, COLCATS[c].title) + '<span class="n">' + fmtN(cnt[c] || 0) + '</span></button>').join('') : '';
+      sel('#cat-text').textContent = f.cat ? COLCATS[f.cat].text : (base.length ? 'Pick a reason to see what it means and only those columns.' : missing.includes('cols') ? 'Not collected.' : 'No column statistics problem with these filters.');
+      sel('#cats').querySelectorAll('[data-cat]').forEach((b) => {
+        b.onclick = () => { f.cat = b.getAttribute('data-cat'); host._t.limit = 300; apply(); };
+      });
+      const list = base.filter((c) => !f.cat || c.cat === f.cat);
+      const rowsOut = groupCols(list);
+      const tables = new Set(list.map((c) => c.con + '|' + c.name)).size;
+      sel('#c-n').innerHTML = esc(plural(list.length, 'column')) + (list.length ? ' in ' + esc(plural(tables, 'table')) : '') + omHint(scoped.length - base.length);
+      const copyAll = sel('#c-copy');
+      copyAll.hidden = !rowsOut.length;
+      copyAll.setAttribute('data-copy', fixScript(rowsOut, colFixCmd));
+      copyAll.setAttribute('data-tip', esc('<b>One statement per table below</b><br>A default gather; it follows the table preferences, so a METHOD_OPT or ESTIMATE_PERCENT preference that caused this stays in force.'));
+      renderTable(host, {
+        rows: rowsOut, limit: 300, empty: 'Nothing matches these filters.',
+        kids: (r) => (r.group ? r.members : null), rowKey: (r) => r.key,
+        onSort: () => apply(),
+        cols: [
+          { key: 'full', label: 'Column', cls: 'wrap', html: (c) => '<code>' + esc(c.full) + '</code>' +
+            (c.group ? ' <span class="pill">' + esc(plural(c.members.length, 'column')) + '</span>' : c.dtype ? ' <span class="pill">' + esc(c.dtype.toLowerCase()) + '</span>' : '') +
+            (consAll.length > 1 ? ' <span class="pill">' + esc(conName(c.con)) + '</span>' : '') },
+          { key: 'cat', label: 'Why', val: (c) => COLCAT_ORDER.indexOf(c.cat), html: (c) => sevBadge(COLCATS[c.cat].sev, COLCATS[c.cat].title, COLCATS[c.cat].text) },
+          { key: 'hist', label: 'Histogram', html: (c) => (c.group ? '' : !c.hist ? '' : c.hist === 'NONE' ? '<span class="muted">none</span>' :
+            esc(c.hist.toLowerCase()) + ' <span class="muted">' + esc(plural(c.buckets, 'bucket')) + '</span>') },
+          { key: 'ndv', label: 'Distinct', num: true, tip: 'NUM_DISTINCT', html: (c) => fmtN(c.ndv) },
+          { key: 'nulls', label: 'Nulls', num: true, tip: 'NUM_NULLS', html: (c) => fmtN(c.nulls) },
+          { key: 'rows', label: 'Table rows', num: true, tip: 'NUM_ROWS of the table', html: (c) => fmtN(c.rows) },
+          { key: 'analyzed', label: 'Column analyzed', cls: 't', html: (c) => (c.analyzed ? esc(fmtT(c.analyzed)) : '<span class="err">never</span>') },
+          { key: 'tabAnalyzed', label: 'Table analyzed', cls: 't', html: (c) => esc(fmtT(c.tabAnalyzed)) +
+            (c.analyzed && c.tabAnalyzed - c.analyzed > 36e5 ? ' <span class="muted">(' + esc(fmtDur((c.tabAnalyzed - c.analyzed) / 1000)) + ' later)</span>' : '') },
+          { key: 'prefs', label: 'Preferences', cls: 'wrap prefs', val: (c) => c.prefs.length,
+            html: (c) => {
+              const key = c.prefs.filter((p) => /^(METHOD_OPT|ESTIMATE_PERCENT)$/.test(p.pref));
+              const rest = c.prefs.length - key.length;
+              return '<div class="pills">' + key.map((p) => '<span class="pill">' + esc(p.pref) + '=' + esc(p.value) + '</span>').join(' ') +
+                (rest ? ' <span class="pill" data-tip="' + esc(c.prefs.map((p) => esc(p.pref) + ' = ' + esc(p.value)).join('<br>')) + '">' + (key.length ? '+' : '') + plural(rest, 'preference') + '</span>' : '') + '</div>';
+            } },
+          { key: 'fix', label: 'Gather', val: () => null, html: (c) => {
+            const cmd = fixScript([c], colFixCmd);
+            return '<button type="button" class="copy" data-copy="' + esc(cmd) + '" data-tip="' + esc('<code>' + esc(cmd).replace(/\n/g, '<br>') + '</code><br><span class="muted">Click to copy. Gathers the whole table with its preferences.</span>') + '">Copy</button>';
+          } }
+        ]
+      });
+    }
+    if (sel('#c-con')) sel('#c-con').onchange = () => { host._t.limit = 300; apply(); };
+    let qt;
+    sel('#c-q').oninput = () => { clearTimeout(qt); qt = setTimeout(apply, 180); };
     apply();
   }
 
@@ -1515,7 +1746,13 @@
         '<dt>Period</dt><dd>' + esc(fmtT(T0)) + ' to ' + esc(fmtT(GEN)) + ' (' + DAYS + ' days)</dd>' +
         '<dt>History kept</dt><dd>' + esc(META.retention) + ' days; the oldest operation still available is from ' + esc(fmtT(ts(META.availability))) + '</dd>' +
         '<dt>Collected as</dt><dd>' + esc(META.user) + ' in ' + esc(META.con) + '</dd>' +
-        '<dt>Rows embedded</dt><dd>' + fmtN(OPS.length) + ' operations, ' + fmtN(TASKS.length) + ' objects (at most ' + fmtN(META.maxTasks) + ' per run), ' + fmtN(BL.length) + ' needing statistics</dd></dl></div>') + '</div>';
+        '<dt>Rows embedded</dt><dd>' + fmtN(OPS.length) + ' operations, ' + fmtN(TASKS.length) + ' objects (at most ' + fmtN(META.maxTasks) + ' per run), ' + fmtN(BL.length) + ' needing statistics, ' + fmtN(COLS.length) + ' columns, ' + fmtN(NEAR.length) + ' close to stale</dd></dl></div>') + '</div>';
+    h += sec('DML monitoring', 'DBA_TAB_MODIFICATIONS: what the staleness checks see. Changes since the newest row are still in memory and counted at the next flush; this report does not flush them.',
+      '<div class="surface"><div class="tablewrap"><table><thead><tr><th>Container</th><th class="num">Tables and partitions with counters</th><th>Newest counters</th><th>STATISTICS_LEVEL</th></tr></thead><tbody>' +
+      (MON.length ? MON.map((m) => '<tr><td>' + esc(conName(m.con)) + '</td><td class="num">' + fmtN(m.n) + '</td><td>' + esc(fmtT(m.newest)) + (m.newest ? ' <span class="muted">' + esc(GEN - m.newest < 60e3 ? 'while the report ran' : fmtAgo(m.newest)) + '</span>' : '') +
+        '</td><td>' + (/^BASIC$/i.test(m.level || '') ? sevBadge('crit', 'BASIC: monitoring off') : '<code>' + esc(m.level) + '</code>') + '</td></tr>').join('')
+        : '<tr><td colspan="4" class="muted">' + (missing.includes('mon') ? 'Not collected.' : 'No DML-monitoring rows.') + '</td></tr>') + '</tbody></table></div>' +
+      '<p class="note" style="margin-block-start:0.75rem">STATISTICS_LEVEL is that of ' + esc(META.con || 'the current container') + '.</p></div>');
     h += sec('Table preferences', 'DBA_TAB_STAT_PREFS, application schemas first.', '<div class="surface"><div id="t-tp"></div></div>');
     v.innerHTML = h;
     renderTable(v.querySelector('#t-win'), {
@@ -1573,6 +1810,7 @@
     baseHash = '#' + raw;
     if (view === 'runs') viewRuns(q);
     else if (view === 'backlog') viewBacklog(q);
+    else if (view === 'columns') viewColumns(q);
     else if (view === 'config') viewConfig();
     else viewOverview(path[1]);
     if (!(view === 'overview' && path[1])) window.scrollTo(0, keep);
